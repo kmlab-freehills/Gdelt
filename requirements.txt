@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+google-cloud-bigquery
+pydantic
+
+torch
+transformers
+accelerate
+bitsandbytes
+scipy
+colorama
+protobuf
+sentencepiece
+
+trafilatura
