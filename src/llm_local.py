@@ -3,7 +3,6 @@ import json
 import os
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-
 MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
 # MODEL_ID = "Qwen/Qwen2.5-14B-Instruct"
 
@@ -12,24 +11,25 @@ SYSTEM_PROMPT = """
 入力されたニュース記事が、特定のキーワード（企業や製品）の「供給網」「生産活動」「事業継続性」に影響を与えるか判定してください。
 
 【判定基準】
-以下の4つの観点のいずれかに該当する場合、`is_relevant: true` と判定してください。
+以下の5つの観点のいずれかに該当する場合、`is_relevant: true` と判定してください。
 直接的な言及だけでなく、間接的な影響（バタフライ効果）も考慮してください。
 
 1. 製造・生産（Direct）: 工場新設、設備投資、撤退、生産停止、技術提携。
 2. 物流・インフラ（Logistics）: 港湾ストライキ、コンテナ不足、運河の封鎖、燃料高騰。
 3. 災害・有事（Crisis）: 工場地帯での地震・洪水、火災、戦争、パンデミック。
 4. 政治・経済（Macro）: 関税導入、輸出規制、貿易摩擦、原材料の輸出禁止措置。
+5. 規制・地政学・ESG（Geopolitics & ESG）: 経済制裁、重要物資の製造を促す補助金政策、サプライチェーン再編を伴う法改正や選挙結果、気候変動による資源不足、サイバー攻撃。
 
 【除外対象（ノイズ）】
 * 一般消費者向けの製品レビュー
 * 単なる日々の株価変動速報
-* キーワードが含まれるだけの無関係なニュース
+* キーワードが含まれるだけの無関係な政治・選挙ニュース（サプライチェーンへの言及がないもの）
 
 【回答フォーマット】
 以下のJSON形式のみで回答してください。Markdownのコードブロック（```json）は不要です。
 {
-  "is_relevant": true または false,
-  "summary_japanese": "「米国で関税引き上げ」のように、事象を客観的に25文字以内で要約"
+    "is_relevant": true または false,
+    "summary_japanese": "「米国で関税引き上げ」のように、事象を客観的に25文字以内で要約"
 }
 """
 
@@ -132,4 +132,3 @@ class LocalLLMHandler:
         except Exception as e:
             print(f"JSON Parse Error: {e}")
             return {"is_relevant": False, "summary_japanese": f"Parse Error: {str(e)}"}
-  

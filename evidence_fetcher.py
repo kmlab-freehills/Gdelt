@@ -32,7 +32,8 @@ def fetch_metadata(keywords: List[str], target_days: int = 7, limit_per_keyword:
 
     print(f"📡 GDELT検索開始 (過去{target_days}日間)...")
 
-    target_themes = [
+    target_themes = [ # TODO: 需要（ニーズ）の動向・その元記事（○○の需要が増）・プレスリリース的なもの。商品リストでとる。先物、LLMに列挙させる。典型フレーズでの検索も視野（○○の売り上げが増加）
+                      #       将来的には因果関係の構造化データとして（鉱山の夜間光増 -> データセンターで銅が使われてる -> ○○だから）
         # --- A. 製造・生産 ---
         "TAX_FNCACT_MANUFACTURER",  # 製造業全般
         "ECON_PRODUCTION",          # 生産活動
@@ -55,7 +56,44 @@ def fetch_metadata(keywords: List[str], target_days: int = 7, limit_per_keyword:
         "ECON_TRADE_DISPUTE",       # 貿易摩擦
         "ECON_TARIFFS",             # 関税
         "ECON_M_A",                 # M&A（業界再編）
-        "ECON_INVEST"               # 投資（新工場建設など）
+        "ECON_INVEST",              # 投資（新工場建設など）
+        
+        # --- E. 規制・地政学リスク ---
+        "ECON_SANCTIONS",           # 経済制裁・輸出規制（半導体規制など）
+        "ECON_SUBSIDIES",           # 補助金（サプライチェーンの国内回帰、工場誘致など）
+        "LEGISLATION",              # 新たな法規制（環境規制、労働法改正など）
+        "ELECTION",                 # 選挙（政権交代による急激な政策変更リスク）
+        "MILITARY",                 # 軍事・地政学（紛争による特定地域からの撤退や物流網の断絶）
+        "ECON_BOYCOTT",             # 不買運動・ボイコット（政治的理由による製品排除）
+        "ECON_NATIONALIZE",         # 国有化（海外拠点の接収リスク）
+        "ARMEDCONFLICT",            # 武力衝突（局地的な紛争）
+
+        # --- F. 社会・サイバー・ESG（オペレーション寸断リスク） ---
+        "SOC_LABOR_STRIKE",         # 労働ストライキ（物流網や巨大工場の麻痺）
+        "CYBER_ATTACK",             # サイバー攻撃（システム乗っ取り・稼働停止）
+        "INTELLECTUAL_PROPERTY",    # 知的財産（技術流出・特許侵害による事業停止）
+        "ENV_CLIMATECHANGE",        # 気候変動（異常気象による原料不足）
+        "WATER_SECURITY",           # 水資源の安全保障（工場稼働のための取水制限）
+
+        # --- G. 経済状況・マクロ指標 ---
+        "ECON_INFLATION",           # インフレ
+        "ECON_INTEREST_RATES",      # 金利
+        "UNEMPLOYMENT",             # 失業率
+        "ECON_OILPRICE",            # 原油価格
+        "SHORTAGE",                 # 不足
+        "AUSTERITY",                # 緊縮財政
+
+        # --- H. 政治・社会不安 ---
+        "PROTEST",                  # 抗議活動
+        "POLITICAL_TURMOIL",        # 政情不安
+        "VIOLENT_UNREST",           # 暴動
+        "STATE_OF_EMERGENCY",       # 非常事態宣言
+        "TERROR",                   # テロ
+        
+        # --- I. インフラ・サプライチェーン寸断 ---
+        "POWER_OUTAGE",             # 停電
+        "BLOCKADE",                 # 封鎖
+        "MARITIME_INCIDENT",        # 海難事故
     ]
     
     theme_conditions = " OR ".join([f"V2Themes LIKE '%{t}%'" for t in target_themes])
