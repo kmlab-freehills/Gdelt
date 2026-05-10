@@ -1,5 +1,5 @@
-gcp-key.json
-.env
-.env.*
 __pycache__/
-*.pyc
+venv/
+fetcher.log
+.env
+*.log

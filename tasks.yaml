@@ -1,0 +1,17 @@
+global_settings:
+  base_url: "https://api.gdeltproject.org/api/v2/doc/doc"
+
+tasks:
+  # - name: "climate_change_news"  # タスク名
+  #   interval_minutes: 20  # 15分ごと (00:00, 00:15, 00:30, ...)
+  #   start_time: "00:00"  # 18:50から開始
+  #   query: '"climate change" AND "global warming"'  # 検索キーワード
+  #   timespan: "1d"  # 直近15分の記事を取得
+  #   max_records: 30  # 取得する最大記事数
+
+  - name: "ai_tech_news"
+    interval_minutes: 20
+    start_time: "00:10"
+    query: '"artificial intelligence" OR "machine learning"'
+    timespan: "1d"
+    max_records: 30

@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  # データベース (PostgreSQL)
+  db:
+    image: postgres:15
+    container_name: gdelt_postgres
+    restart: always
+    env_file: .env
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # データフェッチャー (バックグラウンド取得)
+  fetcher:
+    build: .
+    container_name: gdelt_fetcher
+    restart: always
+    env_file: .env
+    volumes:
+      - .:/app # ログや設定ファイルへのアクセスのため
+    command: python fetcher.py
+    depends_on:
+      - db
+
+  # API サーバー
+  api:
+    build: .
+    container_name: gdelt_api
+    restart: always
+    env_file: .env
+    ports:
+      - "8000:8000"
+    command: python api.py
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
