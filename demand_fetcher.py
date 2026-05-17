@@ -334,7 +334,7 @@ def fetch_articles(query: str, days: int = 14) -> List[Dict]:
 # ============================================================
 # LLMプロンプト生成
 # ============================================================
-def build_llm_prompt(commodity_label: str, articles: List[Dict]) -> str:
+def build_llm_prompt(commodity_label: str, articles: List[Dict], exclude_consensus: bool = False) -> str:
     sep = "=" * 64
 
     if not articles:
@@ -358,9 +358,14 @@ def build_llm_prompt(commodity_label: str, articles: List[Dict]) -> str:
         "  - 市況まとめ・デイリーマーケットレポート・株価サマリー記事",
         "  - 当該コモディティの需要と直接関係のない一般的な金融・経済ニュース",
         "  - 明らかに同一内容の焼き直しや重複・類似記事",
-        "  - 「AIがデータセンターを増設している」「EVが普及している」など、",
-        "    市場参加者の間ですでにコンセンサスとなっている長期トレンドを",
-        "    単に追認しているだけの記事（新規情報がない）",
+        *(
+            [
+                "  - 「AIがデータセンターを増設している」「EVが普及している」など、",
+                "    市場参加者の間ですでにコンセンサスとなっている長期トレンドを",
+                "    単に追認しているだけの記事（新規情報がない）",
+            ]
+            if exclude_consensus else []
+        ),
         "",
         "【評価基準（重要度の高い順）】",
         "除外対象でない記事を、以下の観点で評価し重要度を判定してください。",
@@ -414,7 +419,7 @@ def build_llm_prompt(commodity_label: str, articles: List[Dict]) -> str:
 # ============================================================
 # メイン処理
 # ============================================================
-def run(commodity_keys: List[str], days: int, scrape: bool = True) -> None:
+def run(commodity_keys: List[str], days: int, scrape: bool = True, exclude_consensus: bool = False) -> None:
     all_prompts = []
 
     for key in commodity_keys:
@@ -488,7 +493,7 @@ def run(commodity_keys: List[str], days: int, scrape: bool = True) -> None:
                     flush=True,
                 )
 
-        all_prompts.append(build_llm_prompt(label, articles))
+        all_prompts.append(build_llm_prompt(label, articles, exclude_consensus=exclude_consensus))
 
     print("\n\n")
     print("=" * 64)
@@ -531,6 +536,11 @@ def main() -> None:
         action="store_true",
         help="本文取得をスキップしてタイトルのみで実行（高速化）",
     )
+    parser.add_argument(
+        "--exclude-consensus",
+        action="store_true",
+        help="コンセンサス的な長期トレンド記事をLLMプロンプトの除外対象に含める",
+    )
     args = parser.parse_args()
 
     keys = list(COMMODITIES.keys()) if "all" in args.commodity else args.commodity
@@ -542,11 +552,13 @@ def main() -> None:
         )
 
     scrape = not args.no_scrape
+    exclude_consensus = args.exclude_consensus
     print(f"対象コモディティ: {keys}", flush=True)
     print(f"取得期間: 過去 {args.days} 日", flush=True)
     print(f"本文取得: {'あり' if scrape else 'なし（--no-scrape）'}", flush=True)
+    print(f"コンセンサス記事: {'除外' if exclude_consensus else '含める'}", flush=True)
 
-    run(keys, args.days, scrape=scrape)
+    run(keys, args.days, scrape=scrape, exclude_consensus=exclude_consensus)
 
 
 if __name__ == "__main__":
