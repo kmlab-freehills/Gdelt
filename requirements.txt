@@ -13,3 +13,4 @@ protobuf
 sentencepiece
 
 trafilatura
+pyyaml

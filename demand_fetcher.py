@@ -13,8 +13,16 @@ import json
 import argparse
 import time
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Dict, Set, Optional
+
+try:
+    import yaml
+    _YAML_AVAILABLE = True
+except ImportError:
+    _YAML_AVAILABLE = False
 
 try:
     import trafilatura
@@ -23,163 +31,64 @@ except ImportError:
     _TRAFILATURA_AVAILABLE = False
 
 # ============================================================
-# ノイズドメイン ブラックリスト
-# sourcelang=eng 指定でも混入する非英語・低品質ドメインを除外
+# コモディティ定義を YAML から読み込む
 # ============================================================
-DOMAIN_BLACKLIST: Set[str] = {
-    # 中国系
-    "cnfol.com", "eastmoney.com", "finance.sina.com.cn", "hexun.com",
-    "stock.10jqka.com.cn", "cls.cn", "yicai.com", "caixin.com",
-    # 韓国系
-    "insight.co.kr", "hankyung.com", "mk.co.kr", "edaily.co.kr",
-    # プレスリリース配信 (シンジケーション源としてノイズが多い)
-    "prnewswire.com", "businesswire.com", "globenewswire.com",
-    "accesswire.com", "einpresswire.com",
-    # アグリゲーター系低品質
-    "markets.businessinsider.com", "247wallst.com",
-}
-
-# ============================================================
-# クエリ設計方針（3層構造）
-#
-# Layer 1 フレーズ層    : "X demand" など確実にヒットするアンカー（精度優先）
-# Layer 2 類義語層      : consumption/offtake/procurement など表現の揺れをカバー（再現率優先）
-# Layer 3 デルタ検知層  : "ahead of" / "unexpected" / "exceeds forecast" など
-#                         コンセンサス超えを示す語をアンカーにする（サプライズ優先）
-#
-# マイナス検索で市況まとめ・株式デイリーを除外（GDELT構文: -word / -"phrase"）
-# ============================================================
-
 _NF = (  # 共通ノイズフィルタ（全クエリに付加）
     ' -"market report" -"daily report" -"trading update"'
     ' -"stock market" -"stock price" -"share price"'
     ' -"price today" -"market wrap" -"earnings report"'
 )
 
-COMMODITIES: Dict[str, Dict] = {
-    "copper": {
-        "label": "銅 (Copper)",
-        "queries": [
-            # --- Layer 1: フレーズ層 ---
-            f'"copper demand" surge{_NF}',
-            f'"copper demand" shortage{_NF}',
-            # --- Layer 2: 類義語・業界用語層 ---
-            # consumption/offtake/procurement で "demand" 以外の表現をカバー
-            f'copper consumption surge{_NF}',
-            f'"copper offtake" increase{_NF}',
-            f'"copper procurement" shortage{_NF}',
-            # 別称 "red metal" / 製品形態別
-            f'"red metal" demand shortage{_NF}',
-            f'"copper cathode" shortage{_NF}',
-            # --- Layer 3: デルタ検知層 ---
-            f'copper demand "ahead of forecast"{_NF}',
-            f'copper demand "exceeds" forecast{_NF}',
-            f'"unexpected" copper demand{_NF}',
-            f'copper shortage "bottleneck"{_NF}',
-        ],
-    },
-    "gold": {
-        "label": "金 (Gold)",
-        "queries": [
-            # --- Layer 1 ---
-            f'"gold demand" record{_NF}',
-            f'"gold demand" surge{_NF}',
-            # --- Layer 2 ---
-            f'gold consumption "central bank"{_NF}',
-            f'"gold buying" surge{_NF}',
-            f'"bullion demand" surge{_NF}',
-            f'"gold bullion" shortage{_NF}',
-            # --- Layer 3 ---
-            f'gold demand "ahead of forecast"{_NF}',
-            f'"unexpected" gold demand{_NF}',
-            f'"record gold" purchase{_NF}',
-            f'gold "supply crunch"{_NF}',
-        ],
-    },
-    "uranium": {
-        "label": "ウラン (Uranium)",
-        "queries": [
-            # --- Layer 1 ---
-            f'"uranium demand" nuclear{_NF}',
-            f'"uranium demand" surge{_NF}',
-            # --- Layer 2 ---
-            f'uranium consumption reactor{_NF}',
-            f'"uranium procurement" shortage{_NF}',
-            f'"yellowcake" demand{_NF}',
-            f'"U3O8" demand shortage{_NF}',
-            # --- Layer 3 ---
-            f'uranium demand "ahead of forecast"{_NF}',
-            f'"unexpected" uranium demand{_NF}',
-            f'uranium shortage "reactor"{_NF}',
-            f'uranium "supply crunch"{_NF}',
-        ],
-    },
-    "rare earth": {
-        "label": "レアアース (Rare Earth)",
-        "queries": [
-            # --- Layer 1 ---
-            f'"rare earth" demand surge{_NF}',
-            f'"rare earth" shortage{_NF}',
-            # --- Layer 2 ---
-            # 汎用別称
-            f'"critical minerals" shortage{_NF}',
-            f'"strategic minerals" demand{_NF}',
-            # 主要元素個別（磁石・電池用途で特に重要）
-            f'neodymium shortage demand{_NF}',
-            f'dysprosium shortage demand{_NF}',
-            f'"rare earth" "export restriction"{_NF}',
-            # --- Layer 3 ---
-            f'"rare earth" shortage "ahead of"{_NF}',
-            f'"unexpected" "rare earth" shortage{_NF}',
-            f'"rare earth" "supply crunch" bottleneck{_NF}',
-            f'"critical minerals" "bottleneck"{_NF}',
-        ],
-    },
-    "natural gas": {
-        "label": "天然ガス・LNG (Natural Gas / LNG)",
-        "queries": [
-            # --- Layer 1 ---
-            f'"natural gas" demand surge{_NF}',
-            f'"LNG demand" surge{_NF}',
-            # --- Layer 2 ---
-            f'"gas consumption" record{_NF}',
-            f'"LNG imports" surge{_NF}',
-            f'"pipeline gas" shortage{_NF}',
-            f'LNG "spot demand" surge{_NF}',
-            # --- Layer 3 ---
-            f'"natural gas" demand "ahead of forecast"{_NF}',
-            f'LNG demand "unexpected" surge{_NF}',
-            f'"natural gas" "supply crunch"{_NF}',
-            f'LNG "bottleneck" demand{_NF}',
-        ],
-    },
-    "silver": {
-        "label": "銀 (Silver)",
-        "queries": [
-            # --- Layer 1 ---
-            f'"silver demand" surge{_NF}',
-            f'"silver demand" shortage{_NF}',
-            # --- Layer 2 ---
-            f'silver consumption solar{_NF}',
-            f'"silver offtake" increase{_NF}',
-            f'"silver bullion" shortage{_NF}',
-            f'"industrial silver" demand{_NF}',
-            # --- Layer 3 ---
-            f'silver demand "ahead of forecast"{_NF}',
-            f'"unexpected" silver demand{_NF}',
-            f'silver shortage "solar"{_NF}',
-            f'silver "supply deficit"{_NF}',
-        ],
-    },
+_YAML_PATH = Path(__file__).parent / "targets" / "commodities.yaml"
+
+
+def _load_commodities(path: Path) -> Dict[str, Dict]:
+    if not _YAML_AVAILABLE:
+        raise ImportError(
+            "pyyaml が未インストールです。pip install pyyaml で導入してください。"
+        )
+    if not path.exists():
+        raise FileNotFoundError(f"コモディティ定義ファイルが見つかりません: {path}")
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    # 各クエリにノイズフィルタを付加
+    for config in data.values():
+        config["queries"] = [f"{q}{_NF}" for q in config["queries"]]
+    return data
+
+
+COMMODITIES: Dict[str, Dict] = _load_commodities(_YAML_PATH)
+
+# ============================================================
+# ノイズドメイン ブラックリスト
+# sourcelang=eng 指定でも混入する非英語・低品質ドメインを除外
+# ============================================================
+DOMAIN_BLACKLIST: Set[str] = {
+    # 中国系（サブドメイン含む: finance.eastmoney.com 等も一致）
+    "cnfol.com", "eastmoney.com", "sina.com.cn", "hexun.com",
+    "10jqka.com.cn", "cls.cn", "yicai.com", "caixin.com", "jrj.com.cn",
+    "qq.com", "china.com", "163.com", "sohu.com", "ifeng.com",
+    "wenxuecity.com",
+    # 韓国系
+    "insight.co.kr", "hankyung.com", "mk.co.kr", "edaily.co.kr",
+    # アラビア語・バングラデシュ・その他非英語
+    "masrawy.com", "youm7.com", "prothomalo.com", "banglatribune.com",
+    # スペイン語・ポルトガル語系（英語クエリに混入するノイズ）
+    "infobae.com", "clarin.com", "globo.com",
+    # プレスリリース配信 (シンジケーション源としてノイズが多い)
+    "prnewswire.com", "businesswire.com", "globenewswire.com",
+    "accesswire.com", "einpresswire.com",
+    # アグリゲーター系低品質・決算トランスクリプト系
+    "markets.businessinsider.com", "247wallst.com", "insidermonkey.com",
 }
 
+
 GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc"
-MAX_RECORDS_PER_QUERY = 5   # クエリ数増加分を相殺（重複除去後で十分な量が残る）
+MAX_RECORDS_PER_QUERY = 10  # OR統合でクエリ数が減った分、1クエリあたりの取得数を増やす
 SLEEP_BETWEEN_QUERIES = 6.0
 MAX_RETRIES = 3
 
 SCRAPE_TEXT_LIMIT = 600     # LLMに渡す本文の最大文字数
-SCRAPE_SLEEP = 2.0          # 記事サイト負荷対策
 SCRAPE_TIMEOUT = 10         # trafilatura fetch のタイムアウト（秒）
 
 HEADERS = {
@@ -244,11 +153,11 @@ def scrape_article_text(url: str) -> Optional[str]:
     if not _TRAFILATURA_AVAILABLE or not url:
         return None
     try:
-        downloaded = trafilatura.fetch_url(url, timeout=SCRAPE_TIMEOUT)
-        if not downloaded:
-            return None
+        # trafilatura.fetch_url はスレッドセーフでないため requests.get で代替する
+        resp = requests.get(url, headers=HEADERS, timeout=SCRAPE_TIMEOUT)
+        resp.raise_for_status()
         text = trafilatura.extract(
-            downloaded,
+            resp.text,
             include_comments=False,
             include_tables=False,
             no_fallback=False,
@@ -263,22 +172,33 @@ def scrape_article_text(url: str) -> Optional[str]:
         return None
 
 
+_SCRAPE_MAX_WORKERS = 5  # 並列スクレイピングのスレッド数
+
+
 def enrich_articles_with_text(articles: List[Dict]) -> None:
     """
     articles リストを破壊的に更新し、各要素に 'body' キーを追加する。
-    取得失敗時は 'body' = None。
+    ThreadPoolExecutor で並列取得。取得失敗時は 'body' = None。
     """
     total = len(articles)
-    for i, art in enumerate(articles, 1):
-        url = art.get("url", "")
-        domain = art.get("domain", "")
-        print(f"  [{i}/{total}] 本文取得中: {domain}", flush=True)
-        art["body"] = scrape_article_text(url)
-        if art["body"]:
-            print(f"    ✅ 取得成功 ({len(art['body'])} 文字)", flush=True)
-        else:
-            print(f"    ⚠️  取得失敗（タイトルのみで分析）", flush=True)
-        time.sleep(SCRAPE_SLEEP)
+
+    def _fetch(item):
+        idx, art = item
+        art["body"] = scrape_article_text(art.get("url", ""))
+        return idx, art
+
+    with ThreadPoolExecutor(max_workers=_SCRAPE_MAX_WORKERS) as executor:
+        futures = {
+            executor.submit(_fetch, (i, art)): i
+            for i, art in enumerate(articles, 1)
+        }
+        for future in as_completed(futures):
+            i, art = future.result()
+            domain = art.get("domain", "")
+            if art["body"]:
+                print(f"  [{i}/{total}] ✅ {domain} ({len(art['body'])} 文字)", flush=True)
+            else:
+                print(f"  [{i}/{total}] ⚠️  {domain} 取得失敗", flush=True)
 
 
 # ============================================================
@@ -449,8 +369,8 @@ def run(commodity_keys: List[str], days: int, scrape: bool = True, exclude_conse
                 domain = art.get("domain", "")
                 title = art.get("title", "")
 
-                # ドメインブラックリストフィルタ
-                if domain in DOMAIN_BLACKLIST:
+                # ドメインブラックリストフィルタ（サブドメイン対応）
+                if any(domain == b or domain.endswith("." + b) for b in DOMAIN_BLACKLIST):
                     skipped_domain += 1
                     continue
 

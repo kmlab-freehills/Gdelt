@@ -1,0 +1,77 @@
+# commodities.yaml
+# クエリは _NF（ノイズフィルタ）を含まない。demand_fetcher.py が自動付加する。
+# GDELT DOC API ブール構文: OR (大文字必須), - (NOT), "phrase"
+# ※ 括弧によるグルーピングに対応: "copper demand" (surge OR shortage)
+
+"copper":
+  label: "銅 (Copper)"
+  queries:
+    # --- Layer 1: フレーズ層 ---
+    - '"copper demand" (surge OR shortage OR deficit)'
+    # --- Layer 2: 類義語・業界用語層 ---
+    - 'copper (consumption OR offtake OR procurement) (surge OR shortage OR increase)'
+    - '("red metal" OR "copper cathode") (demand OR shortage)'
+    # --- Layer 3: デルタ検知層 ---
+    - 'copper demand ("ahead of forecast" OR "exceeds forecast" OR "beats expectations")'
+    - '("unexpected" OR surprise) copper demand OR copper shortage bottleneck'
+
+"gold":
+  label: "金 (Gold)"
+  queries:
+    # --- Layer 1 ---
+    - '"gold demand" (record OR surge OR shortage OR deficit)'
+    # --- Layer 2 ---
+    - '"central bank" (gold OR bullion) (buying OR purchase OR demand)'
+    - '("bullion demand" OR "gold bullion" OR "physical gold") (surge OR shortage OR record)'
+    # --- Layer 3 ---
+    - '"gold demand" ("ahead of forecast" OR "beats expectations" OR unexpected OR "supply crunch")'
+    - '"gold imports" (surge OR ban OR restriction OR record)'
+
+"uranium":
+  label: "ウラン (Uranium)"
+  queries:
+    # --- Layer 1 ---
+    - '"uranium demand" (nuclear OR surge OR shortage)'
+    # --- Layer 2 ---
+    - 'uranium (consumption OR procurement) (reactor OR shortage OR surge)'
+    - '("yellowcake" OR "U3O8") (demand OR shortage)'
+    # --- Layer 3 ---
+    - 'uranium demand ("ahead of forecast" OR "beats expectations" OR unexpected)'
+    - 'uranium (shortage OR "supply crunch") reactor'
+
+"rare earth":
+  label: "レアアース (Rare Earth)"
+  queries:
+    # --- Layer 1 ---
+    - '"rare earth" (demand OR shortage) (surge OR critical)'
+    # --- Layer 2 ---
+    - '("critical minerals" OR "strategic minerals") (shortage OR demand)'
+    - '(neodymium OR dysprosium) (shortage OR demand)'
+    - '"rare earth" "export restriction"'
+    # --- Layer 3 ---
+    - '"rare earth" shortage ("ahead of" OR unexpected OR bottleneck)'
+    - '"critical minerals" bottleneck OR "rare earth" "supply crunch"'
+
+"natural gas":
+  label: "天然ガス・LNG (Natural Gas / LNG)"
+  queries:
+    # --- Layer 1 ---
+    - '("natural gas" OR LNG) demand (surge OR record OR shortage)'
+    # --- Layer 2 ---
+    - '("gas consumption" OR "LNG imports") (record OR surge)'
+    - '("pipeline gas" OR LNG) (shortage OR "spot demand") surge'
+    # --- Layer 3 ---
+    - '("natural gas" OR LNG) demand ("ahead of forecast" OR "beats expectations" OR unexpected)'
+    - '("natural gas" OR LNG) "supply crunch" OR LNG bottleneck demand'
+
+"silver":
+  label: "銀 (Silver)"
+  queries:
+    # --- Layer 1 ---
+    - '"silver demand" (surge OR shortage OR deficit)'
+    # --- Layer 2 ---
+    - 'silver (consumption OR offtake) (solar OR increase OR surge)'
+    - '("silver bullion" OR "industrial silver") (shortage OR demand)'
+    # --- Layer 3 ---
+    - 'silver demand ("ahead of forecast" OR "beats expectations" OR unexpected)'
+    - 'silver (shortage OR "supply deficit") solar OR silver "supply crunch"'

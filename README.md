@@ -38,10 +38,11 @@ GDELT DOC API を使い、指定した対象（原材料・製品・業種など
 ### インストール
 
 ```bash
-pip install requests trafilatura
+pip install -r requirements.txt
 ```
 
-> `trafilatura` は記事本文の取得に使用します。未インストールでも動作しますが、本文抜粋なしのタイトルのみモードになります。
+> `trafilatura` は記事本文の取得に使用します。未インストールでも動作しますが、本文抜粋なしのタイトルのみモードになります。  
+> `pyyaml` はコモディティ定義ファイル（`commodities.yaml`）の読み込みに必須です。
 
 ---
 
@@ -78,30 +79,46 @@ python demand_fetcher.py --commodity copper --exclude-consensus
 ## 処理の流れ
 
 ```
-1. コモディティごとに複数のGDELTクエリを実行
+1. commodities.yaml からクエリ定義を読み込み
        ↓
-2. URL・タイトルの重複排除 + ドメインブラックリストフィルタ
+2. コモディティごとに複数のGDELTクエリを実行（OR演算子で集約済み）
        ↓
-3. trafilatura で各記事の本文を取得（--no-scrape で省略可）
+3. URL・タイトルの重複排除 + ドメインブラックリストフィルタ
        ↓
-4. LLM分析用プロンプトを標準出力に表示
+4. trafilatura で各記事の本文を並列取得（--no-scrape で省略可）
        ↓
-5. プロンプトをコピーしてLLMに貼り付けて分析
+5. LLM分析用プロンプトを標準出力に表示
+       ↓
+6. プロンプトをコピーしてLLMに貼り付けて分析
 ```
 
 ---
 
 ## クエリ設計（3層構造）
 
-各コモディティに対し、以下の3層でクエリを構成しています。
+各コモディティに対し、以下の3層でクエリを構成しています。クエリ定義は `targets/commodities.yaml` で管理します。
 
 | 層 | 目的 | 例 |
 |----|------|-----|
-| Layer 1 フレーズ層 | 精度優先のアンカー検索 | `"copper demand" surge` |
-| Layer 2 類義語層 | 表現の揺れをカバー（再現率向上） | `copper offtake increase` |
-| Layer 3 デルタ検知層 | コンセンサス超えのサプライズ検知 | `copper demand "exceeds forecast"` |
+| Layer 1 フレーズ層 | 精度優先のアンカー検索 | `"copper demand" (surge OR shortage OR deficit)` |
+| Layer 2 類義語層 | 表現の揺れをカバー（再現率向上） | `copper (consumption OR offtake OR procurement) (surge OR shortage)` |
+| Layer 3 デルタ検知層 | コンセンサス超えのサプライズ検知 | `copper demand ("beats expectations" OR "ahead of forecast")` |
 
+OR演算子を活用してクエリ数を集約し、APIコール数を削減しています。  
 市況まとめ・株価サマリー系の記事はクエリ段階でマイナス検索により除外されます。
+
+### コモディティの追加・変更
+
+`targets/commodities.yaml` を編集するだけで対象を追加・変更できます。自動車・半導体などカテゴリが増えた場合は `targets/` 以下に新しいYAMLファイルを追加してください。コードの修正は不要です。
+
+```yaml
+"lithium":
+  label: "リチウム (Lithium)"
+  queries:
+    - '"lithium demand" (surge OR shortage OR deficit)'
+    - 'lithium (consumption OR procurement) (surge OR shortage)'
+    - 'lithium demand ("beats expectations" OR "ahead of forecast" OR unexpected)'
+```
 
 ---
 
@@ -133,11 +150,11 @@ python demand_fetcher.py --commodity copper --exclude-consensus
 
 | 定数 | 値 | 説明 |
 |------|----|------|
-| `MAX_RECORDS_PER_QUERY` | 5 | 1クエリあたりの最大取得件数 |
+| `MAX_RECORDS_PER_QUERY` | 10 | 1クエリあたりの最大取得件数 |
 | `SLEEP_BETWEEN_QUERIES` | 6.0秒 | GDELT APIへのリクエスト間隔 |
 | `MAX_RETRIES` | 3 | APIリクエスト失敗時のリトライ回数 |
 | `SCRAPE_TEXT_LIMIT` | 600文字 | 本文抜粋の最大文字数 |
-| `SCRAPE_SLEEP` | 2.0秒 | 記事サイトへのリクエスト間隔 |
+| `_SCRAPE_MAX_WORKERS` | 5 | 本文取得の並列スレッド数 |
 
 ---
 
