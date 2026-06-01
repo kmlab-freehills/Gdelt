@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: gdelt_postgres
+    restart: always
+    env_file: .env
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  fetcher:
+    build: .
+    container_name: gdelt_fetcher
+    restart: always
+    env_file: .env
+    command: python fetcher.py
+    depends_on:
+      db:
+        condition: service_healthy
+
+  llm_processor:
+    build: .
+    container_name: gdelt_llm_processor
+    restart: always
+    env_file: .env
+    command: python llm_processor.py
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    container_name: gdelt_api
+    restart: always
+    env_file: .env
+    ports:
+      - "8000:8000"
+    command: python api.py
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

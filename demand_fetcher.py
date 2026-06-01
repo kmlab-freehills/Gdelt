@@ -14,7 +14,7 @@ import argparse
 import time
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Set, Optional
 
@@ -80,12 +80,18 @@ DOMAIN_BLACKLIST: Set[str] = {
     "accesswire.com", "einpresswire.com",
     # アグリゲーター系低品質・決算トランスクリプト系
     "markets.businessinsider.com", "247wallst.com", "insidermonkey.com",
+    # ベトナム系（sourcelang=eng をすり抜けるノイズ）
+    "baomoi.com", "vietgiaitri.com", "afamily.vn", "voh.com.vn",
+    "vnexpress.net", "tuoitre.vn", "thanhnien.vn", "dantri.com.vn",
+    "kenh14.vn", "cafef.vn", "tienphong.vn",
+    # 中国系追加
+    "eeo.com.cn", "kr.xinhuanet.com", "xinhuanet.com",
 }
 
 
 GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc"
 MAX_RECORDS_PER_QUERY = 10  # OR統合でクエリ数が減った分、1クエリあたりの取得数を増やす
-SLEEP_BETWEEN_QUERIES = 6.0
+SLEEP_BETWEEN_QUERIES = 12.0
 MAX_RETRIES = 3
 
 SCRAPE_TEXT_LIMIT = 600     # LLMに渡す本文の最大文字数
@@ -223,7 +229,7 @@ def fetch_articles(query: str, days: int = 14) -> List[Dict]:
             )
 
             if resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", 15 * attempt))
+                wait = int(resp.headers.get("Retry-After", min(60 * attempt, 300)))
                 print(
                     f"  [429] レート制限。{wait}秒待機してリトライ"
                     f" ({attempt}/{MAX_RETRIES})...",
@@ -238,11 +244,11 @@ def fetch_articles(query: str, days: int = 14) -> List[Dict]:
         except requests.exceptions.HTTPError as e:
             print(f"  [HTTP ERROR] {e} (試行 {attempt}/{MAX_RETRIES})", flush=True)
             if attempt < MAX_RETRIES:
-                time.sleep(8 * attempt)
+                time.sleep(min(30 * (2 ** (attempt - 1)), 300))
         except requests.exceptions.RequestException as e:
             print(f"  [ERROR] リクエスト失敗 (試行 {attempt}/{MAX_RETRIES}): {e}", flush=True)
             if attempt < MAX_RETRIES:
-                time.sleep(8 * attempt)
+                time.sleep(min(30 * (2 ** (attempt - 1)), 300))
         except (json.JSONDecodeError, ValueError):
             snippet = resp.text[:300] if "resp" in dir() else "(no response)"
             print(f"  [ERROR] JSONパース失敗: {snippet}", flush=True)
@@ -332,6 +338,25 @@ def build_llm_prompt(commodity_label: str, articles: List[Dict], exclude_consens
             lines.append(f"    本文抜粋: （取得不可 - タイトルのみで判断）")
         lines.append("")
 
+    lines += [
+        sep,
+        "",
+        "【出力フォーマット（JSON）】",
+        "分析結果を以下のJSON形式のみで出力してください。Markdownコードブロックは不要です。",
+        "",
+        "{",
+        '  "articles": [',
+        '    {"id": 1, "excluded": false, "rating": 3, "reason": "判定理由1〜2文"},',
+        '    {"id": 2, "excluded": true, "rating": null, "reason": "除外理由"}',
+        "  ],",
+        '  "drivers": ["ドライバー1", "ドライバー2"],',
+        '  "top3": [',
+        '    {"id": 6, "why_consensus_breaking": "コンセンサスを超える理由"}',
+        "  ]",
+        "}",
+        "",
+        "※ rating は 1/2/3 の整数（★☆☆=1, ★★☆=2, ★★★=3）。除外記事は null。",
+    ]
     lines.append(sep)
     return "\n".join(lines)
 

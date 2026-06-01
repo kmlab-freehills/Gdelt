@@ -1,165 +1,174 @@
-# demand_fetcher — 需要シグナル収集ツール
+# GDELT 需要シグナル収集・分析システム
 
-GDELT DOC API を使い、指定した対象（原材料・製品・業種など）に関する需要動向ニュースを収集し、LLMへ貼り付けるプロンプトを自動生成するスクリプトです。
+このシステムは、GDELT Doc APIからコモディティ関連ニュースを定期的に収集し、PostgreSQLに保存、GeminiによるLLM分析を経て、REST API経由で需要シグナルを提供します。
 
----
+## 主な機能
 
-## 目的
+- **フェッチャー (fetcher.py)**: `targets/commodities.yaml` に定義されたコモディティごとに定期収集。ドメインブラックリスト・タイトル重複排除・trafilaturaによる本文スクレイピングを実施。429エラー時は自動リトライ。
+- **LLMプロセッサ (llm_processor.py)**: DB内の未処理記事をコモディティごとにバッチ処理し、Geminiによる需要シグナル分析（★評価・除外判定・ドライバー特定・top3）を `llm_analysis` カラムに保存。
+- **API (api.py)**: FastAPIによるデータ提供。コモディティ・日付・LLM処理状態でフィルタリング可能。
+- **Docker対応**: DB・フェッチャー・LLMプロセッサ・APIの4サービスをDocker Composeで一元管理。
 
-任意の対象（原材料・製品・業種など）に関する需要変動を示す英語ニュース記事をGDELTから取得し、LLM（ChatGPT等）による需要シグナル分析に利用できるプロンプトを出力します。現在試用段階であり、将来的にはローカルLLMにそのプロンプトを渡し、分析まで完了した状態で出力（DB保存）予定。
+## ディレクトリ構造
 
-現在は原材料（コモディティ）を対象としていますが、今後は自動車などの製品レベルへの拡張を予定しています。
+```
+/
+├── demand_fetcher.py       # コア収集ロジック（フィルタリング・スクレイプ・LLMプロンプト生成）
+├── fetcher.py              # 定期収集スケジューラ
+├── llm_processor.py        # LLM分析スケジューラ（Gemini → DB保存）
+├── database.py             # DBモデル定義
+├── api.py                  # REST API サーバー
+├── targets/
+│   └── commodities.yaml    # コモディティ定義（クエリ・ラベル）
+├── docker-compose.yml      # 全サービス構成
+├── Dockerfile              # コンテナ定義
+├── .env.example            # 環境変数テンプレート
+├── requirements.txt
+└── roadmap.yaml            # 開発ロードマップ
+```
 
----
+> このシステムは **Kizue_get_demand ブランチ**（収集・フィルタリング・LLMプロンプト生成）と **Migita ブランチ**（DB・スケジューラ・APIインフラ）を統合したものです。
 
-## 検索対象リスト（テストリスト）
+## セットアップ手順
 
-
-| キー | 対象 |
-|------|------|
-| `copper` | 銅（デフォルト） |
-| `gold` | 金 |
-| `uranium` | ウラン |
-| `rare earth` | レアアース（ネオジム・ジスプロシウム等） |
-| `natural gas` | 天然ガス・LNG |
-| `silver` | 銀 |
-
-> 拡張予定の例: 自動車、半導体、電池材料 など
-
----
-
-## セットアップ
-
-### 必要環境
-
-- Python 3.9 以上
-- インターネット接続（GDELT API・記事サイトへのアクセス）
-
-### インストール
+### 1. リポジトリの準備
 
 ```bash
-pip install -r requirements.txt
+git clone <repository_url>
+cd <repository_directory>
+git checkout integration
 ```
 
-> `trafilatura` は記事本文の取得に使用します。未インストールでも動作しますが、本文抜粋なしのタイトルのみモードになります。  
-> `pyyaml` はコモディティ定義ファイル（`commodities.yaml`）の読み込みに必須です。
+### 2. 環境変数の設定
 
----
-
-## 使い方
+`.env.example` を `.env` にコピーし、必要な値を設定します。
 
 ```bash
-# 銅（デフォルト）を過去14日分取得
-python demand_fetcher.py
-
-# 複数コモディティを指定
-python demand_fetcher.py --commodity gold uranium
-
-# 全コモディティを過去7日分取得
-python demand_fetcher.py --commodity all --days 7
-
-# 本文取得をスキップして高速化
-python demand_fetcher.py --commodity copper --no-scrape
-
-# コンセンサス的な長期トレンド記事を除外して分析（デフォルトは含める）
-python demand_fetcher.py --commodity copper --exclude-consensus
+cp .env.example .env
 ```
 
-### オプション一覧
+`.env` の設定項目：
 
-| オプション | デフォルト | 説明 |
-|-----------|-----------|------|
-| `--commodity NAME [NAME ...]` | `copper` | 対象コモディティ。`all` で全件 |
-| `--days N` | `14` | 遡及日数（最大約90日） |
-| `--no-scrape` | （未指定） | 本文取得をスキップしタイトルのみで実行（タイトルのみで判断させると、精度が著しく低下する恐れあり） |
-| `--exclude-consensus` | （未指定） | コンセンサス的な長期トレンド記事をLLMプロンプトの除外対象に含める |
+```env
+# LLM
+GEMINI_API_KEY=your_gemini_api_key_here
 
----
+# PostgreSQL（Docker Compose使用時はこのまま）
+DATABASE_URL=postgresql://gdelt_user:gdelt_password@db:5432/gdelt_db
+POSTGRES_USER=gdelt_user
+POSTGRES_PASSWORD=gdelt_password
+POSTGRES_DB=gdelt_db
 
-## 処理の流れ
-
-```
-1. commodities.yaml からクエリ定義を読み込み
-       ↓
-2. コモディティごとに複数のGDELTクエリを実行（OR演算子で集約済み）
-       ↓
-3. URL・タイトルの重複排除 + ドメインブラックリストフィルタ
-       ↓
-4. trafilatura で各記事の本文を並列取得（--no-scrape で省略可）
-       ↓
-5. LLM分析用プロンプトを標準出力に表示
-       ↓
-6. プロンプトをコピーしてLLMに貼り付けて分析
+# スケジュール間隔（任意）
+FETCH_INTERVAL_HOURS=6
+LLM_INTERVAL_HOURS=6
 ```
 
----
+### 3. Docker Compose で起動
 
-## クエリ設計（3層構造）
+```bash
+docker compose up -d --build
+```
 
-各コモディティに対し、以下の3層でクエリを構成しています。クエリ定義は `targets/commodities.yaml` で管理します。
+起動するコンテナ：
 
-| 層 | 目的 | 例 |
-|----|------|-----|
-| Layer 1 フレーズ層 | 精度優先のアンカー検索 | `"copper demand" (surge OR shortage OR deficit)` |
-| Layer 2 類義語層 | 表現の揺れをカバー（再現率向上） | `copper (consumption OR offtake OR procurement) (surge OR shortage)` |
-| Layer 3 デルタ検知層 | コンセンサス超えのサプライズ検知 | `copper demand ("beats expectations" OR "ahead of forecast")` |
+| コンテナ | 役割 | ポート |
+|---|---|---|
+| `gdelt_postgres` | PostgreSQL データベース | 5432 |
+| `gdelt_fetcher` | 定期収集ワーカー | - |
+| `gdelt_llm_processor` | LLM分析ワーカー | - |
+| `gdelt_api` | REST API サーバー | 8000 |
 
-OR演算子を活用してクエリ数を集約し、APIコール数を削減しています。  
-市況まとめ・株価サマリー系の記事はクエリ段階でマイナス検索により除外されます。
+## ログの確認
 
-### コモディティの追加・変更
+```bash
+docker logs -f gdelt_fetcher
+docker logs -f gdelt_llm_processor
+docker logs -f gdelt_api
+```
 
-`targets/commodities.yaml` を編集するだけで対象を追加・変更できます。自動車・半導体などカテゴリが増えた場合は `targets/` 以下に新しいYAMLファイルを追加してください。コードの修正は不要です。
+## 手動実行
+
+スケジュール実行を待たずに即時実行したい場合：
+
+```bash
+# 収集（copper のみ）
+docker exec gdelt_fetcher python -c \
+  "from fetcher import fetch_and_store_commodity; fetch_and_store_commodity('copper')"
+
+# LLM処理（copper のみ）
+docker exec gdelt_llm_processor python -c \
+  "from llm_processor import process_commodity, _get_llm_backend; \
+   process_commodity('copper', _get_llm_backend())"
+
+# LLM処理（全コモディティ）
+docker exec gdelt_llm_processor python -c \
+  "from llm_processor import run_all, _get_llm_backend; run_all(_get_llm_backend())"
+
+# llm_analysis のリセット（再処理したいとき）
+docker exec gdelt_postgres psql -U gdelt_user -d gdelt_db -c \
+  "UPDATE articles SET is_llm_processed=false, llm_analysis=null WHERE task_name='copper';"
+```
+
+## コモディティの追加
+
+`targets/commodities.yaml` にエントリを追加するだけで次回収集から対象に含まれます。コードの変更は不要です。
 
 ```yaml
 "lithium":
   label: "リチウム (Lithium)"
   queries:
     - '"lithium demand" (surge OR shortage OR deficit)'
-    - 'lithium (consumption OR procurement) (surge OR shortage)'
+    - 'lithium (consumption OR procurement) (surge OR shortage OR increase)'
     - 'lithium demand ("beats expectations" OR "ahead of forecast" OR unexpected)'
 ```
 
+## API の利用
+
+APIサーバー起動後、Swagger UIでエンドポイントを確認できます：
+
+- **http://localhost:8000/docs**
+
+主なエンドポイント：
+
+| エンドポイント | 説明 |
+|---|---|
+| `GET /api/v1/articles` | 記事一覧（commodity・日付・is_llm_processed でフィルタ可） |
+| `GET /api/v1/stats` | コモディティごとの収集件数・LLM処理件数・最新記事日時 |
+
+`llm_analysis` フィールドの構造：
+
+```json
+{
+  "rating": 3,
+  "excluded": false,
+  "reason": "判定理由（日本語）",
+  "drivers": ["需要ドライバー1", "需要ドライバー2"],
+  "top3": [{"id": 5, "why_consensus_breaking": "コンセンサスを超える理由"}]
+}
+```
+
+| rating | 評価 | 意味 |
+|---|---|---|
+| 3 | ★★★ | コンセンサスからの乖離・新規シグナル |
+| 2 | ★★☆ | 需要の二次的影響・周辺変化 |
+| 1 | ★☆☆ | 既知トレンドの再確認（参考情報） |
+| null | 除外 | 無関係・重複記事 |
+
+## 今後の開発方針
+
+詳細は `roadmap.yaml` を参照。
+
+| Phase | 内容 | 状態 |
+|---|---|---|
+| 3 | API拡張（手動トリガー・評価フィルタ） | 🔲 未着手 |
+| 4 | ローカルLLMへの差し替え | 🔲 未着手 |
+| 5 | コモディティ自動生成（LLMでYAML拡張） | 🔲 未着手 |
+
 ---
 
-## ドメインブラックリスト
+### 注意事項
 
-`sourcelang=eng` を指定しても混入する低品質ドメインを個別にリスト管理して除外します（`DOMAIN_BLACKLIST` に定義）。
-
-除外カテゴリ例：
-- 中国系金融メディア（eastmoney.com等）
-- 韓国系メディア（hankyung.com等）
-- プレスリリース配信サービス（prnewswire.com等）
-
----
-
-## 出力プロンプトの構成
-
-出力されるLLMプロンプトには以下が含まれます。
-
-1. **除外ルール**: 市況まとめ・重複記事を除外させる指示。`--exclude-consensus` 指定時はコンセンサス的な長期トレンド記事も除外対象に追加
-2. **評価基準（★3段階）**:
-   - ★★★: コンセンサスからの「ズレ・変化率（デルタ）」を示す記事
-   - ★★☆: 需要増の二次的影響（代替品シフト・SCボトルネック等）を報じる記事
-   - ★☆☆: 既知トレンドの再確認にとどまる記事（常に低評価として扱う。`--exclude-consensus` を付けると「低評価」ではなく「分析対象外（除外）」として扱われる）
-3. **記事一覧**: タイトル・日付・メディア・URL・本文抜粋（最大600文字）
-
----
-
-## 主要パラメータ（スクリプト内定数）
-
-| 定数 | 値 | 説明 |
-|------|----|------|
-| `MAX_RECORDS_PER_QUERY` | 10 | 1クエリあたりの最大取得件数 |
-| `SLEEP_BETWEEN_QUERIES` | 6.0秒 | GDELT APIへのリクエスト間隔 |
-| `MAX_RETRIES` | 3 | APIリクエスト失敗時のリトライ回数 |
-| `SCRAPE_TEXT_LIMIT` | 600文字 | 本文抜粋の最大文字数 |
-| `_SCRAPE_MAX_WORKERS` | 5 | 本文取得の並列スレッド数 |
-
----
-
-## 注意事項
-
-- GDELT DOC API は無料・認証不要ですが、リクエスト頻度に制限があります。過度な連続実行は避けてください。
-- `--days` に大きな値を指定すると取得件数・実行時間が増加します。
-- 本文取得（scrape）は各記事サイトへアクセスするため、ペイウォール記事は取得できません。
+- **GDELTのレート制限**: 429エラーが頻発する場合は数分待機してから再実行してください。`demand_fetcher.py` の `SLEEP_BETWEEN_QUERIES`（現在12秒）で間隔を調整できます。
+- **ドメインブラックリスト**: `sourcelang=eng` 指定でも混入する非英語ドメインは `demand_fetcher.py` の `DOMAIN_BLACKLIST` に随時追加してください。
+- **ローカルLLMへの差し替え**: `llm_processor.py` の `_get_llm_backend()` に `call(prompt: str) -> str` インターフェースを実装するだけで切り替え可能です。
