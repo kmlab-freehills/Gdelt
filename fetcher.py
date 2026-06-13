@@ -1,15 +1,17 @@
 """
 定期収集スケジューラ
-commodities.yaml の各コモディティを定期的に GDELT DOC API から収集し DB に保存する。
+
+targets/commodities.yaml の各ターゲットについて
+Monitor（速報性重視・広域）と Analyze（需要シグナル特化）の収集ジョブを
+APScheduler で管理する。どちらか一方のみ定義されたターゲットも正しく動作する。
 """
 
 import logging
 import os
 import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 from sqlalchemy.exc import IntegrityError
@@ -17,13 +19,12 @@ from tenacity import before_sleep_log, retry, stop_after_attempt, wait_fixed
 
 from database import Article, SessionLocal, init_db
 from demand_fetcher import (
-    COMMODITIES,
     DOMAIN_BLACKLIST,
     SLEEP_BETWEEN_QUERIES,
+    TARGETS,
     enrich_articles_with_text,
     fetch_articles,
     normalize_title,
-    parse_gdelt_date,
 )
 
 load_dotenv()
@@ -35,29 +36,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-FETCH_INTERVAL_HOURS = int(os.getenv("FETCH_INTERVAL_HOURS", "6"))
-FETCH_DAYS = int(os.getenv("FETCH_DAYS", "1"))  # 収集対象期間（日）
 
-
-def fetch_and_store_commodity(commodity_key: str) -> None:
-    config = COMMODITIES.get(commodity_key)
+def fetch_and_store(target_key: str, mode: str) -> None:
+    """
+    指定ターゲットを指定モード（monitor / analyze）で収集してDBに保存する。
+    YAMLにそのモードが定義されていなければ何もしない。
+    """
+    config = TARGETS.get(target_key)
     if not config:
-        logger.error(f"不明なコモディティ: {commodity_key}")
+        logger.error(f"不明なターゲット: {target_key}")
+        return
+
+    mode_config = config.get(mode)
+    if not mode_config:
         return
 
     label = config["label"]
+    queries = mode_config["queries"]
+    timespan = mode_config["timespan"]
+    max_records = mode_config["max_records"]
+    fetched_at = datetime.now(timezone.utc)
 
-    # 同時アクセス回避のランダムジッター
     jitter = random.uniform(2, 7)
-    logger.info(f"[{label}] {jitter:.1f}秒待機後にリクエスト開始")
+    logger.info(f"[{label}/{mode}] {jitter:.1f}秒待機後に収集開始 (timespan={timespan}, max={max_records})")
     time.sleep(jitter)
 
     seen_urls: set[str] = set()
     seen_titles: set[str] = set()
     articles: list[dict] = []
 
-    for q in config["queries"]:
-        logger.info(f"[{label}] クエリ: {q}")
+    for q in queries:
+        logger.info(f"[{label}/{mode}] クエリ: {q[:80]}...")
 
         @retry(
             stop=stop_after_attempt(3),
@@ -66,12 +75,12 @@ def fetch_and_store_commodity(commodity_key: str) -> None:
             reraise=True,
         )
         def _fetch_with_retry(query=q):
-            return fetch_articles(query, days=FETCH_DAYS)
+            return fetch_articles(query, timespan=timespan, max_records=max_records)
 
         try:
             results = _fetch_with_retry()
         except Exception as e:
-            logger.error(f"[{label}] クエリ取得断念: {e}")
+            logger.error(f"[{label}/{mode}] クエリ取得断念: {e}")
             time.sleep(SLEEP_BETWEEN_QUERIES)
             continue
 
@@ -96,11 +105,11 @@ def fetch_and_store_commodity(commodity_key: str) -> None:
             articles.append(art)
             new_count += 1
 
-        logger.info(f"[{label}] クエリ完了: 新規 {new_count} 件 (累計 {len(articles)} 件)")
+        logger.info(f"[{label}/{mode}] クエリ完了: 新規 {new_count} 件 (累計 {len(articles)} 件)")
         time.sleep(SLEEP_BETWEEN_QUERIES)
 
     if not articles:
-        logger.info(f"[{label}] 取得記事なし")
+        logger.info(f"[{label}/{mode}] 取得記事なし")
         return
 
     enrich_articles_with_text(articles)
@@ -123,8 +132,12 @@ def fetch_and_store_commodity(commodity_key: str) -> None:
                 publish_date = datetime.now(timezone.utc)
 
             new_article = Article(
-                task_name=commodity_key,
+                target=target_key,
+                collection_mode=mode,
                 publish_date=publish_date,
+                fetched_at=fetched_at,
+                title=art.get("title"),
+                source_domain=art.get("domain"),
                 url=url,
                 raw_data=art,
                 body=art.get("body"),
@@ -138,11 +151,11 @@ def fetch_and_store_commodity(commodity_key: str) -> None:
                 skipped += 1
             except Exception as e:
                 session.rollback()
-                logger.error(f"[{label}] DB保存エラー: {e}")
+                logger.error(f"[{label}/{mode}] DB保存エラー: {e}")
     finally:
         session.close()
 
-    logger.info(f"[{label}] 保存完了 (新規: {inserted}, 重複スキップ: {skipped})")
+    logger.info(f"[{label}/{mode}] 保存完了 (新規: {inserted}, 重複スキップ: {skipped})")
 
 
 def main() -> None:
@@ -151,16 +164,23 @@ def main() -> None:
 
     scheduler = BlockingScheduler()
 
-    for key in COMMODITIES:
-        scheduler.add_job(
-            fetch_and_store_commodity,
-            "interval",
-            hours=FETCH_INTERVAL_HOURS,
-            args=[key],
-            id=f"fetch_{key}",
-            misfire_grace_time=600,
-        )
-        logger.info(f"タスク登録: {key} (間隔: {FETCH_INTERVAL_HOURS}時間ごと)")
+    for target_key, config in TARGETS.items():
+        label = config.get("label", target_key)
+        for mode in ("monitor", "analyze"):
+            mode_config = config.get(mode)
+            if not mode_config:
+                continue
+            interval = mode_config["interval_minutes"]
+            scheduler.add_job(
+                fetch_and_store,
+                "interval",
+                minutes=interval,
+                args=[target_key, mode],
+                id=f"{mode}_{target_key}",
+                next_run_time=datetime.now(timezone.utc) + timedelta(minutes=interval),
+                misfire_grace_time=600,
+            )
+            logger.info(f"タスク登録: [{label}/{mode}] ({interval}分ごと, timespan={mode_config['timespan']})")
 
     try:
         logger.info("スケジューラ開始")

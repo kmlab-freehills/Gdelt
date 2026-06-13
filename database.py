@@ -1,6 +1,6 @@
 import os
-from datetime import datetime
-from sqlalchemy import create_engine, Integer, String, DateTime, Boolean, Text
+from datetime import datetime, date
+from sqlalchemy import create_engine, Integer, String, DateTime, Boolean, Date, Text, ARRAY
 from sqlalchemy.orm import sessionmaker, declarative_base, Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import JSONB
 from dotenv import load_dotenv
@@ -21,13 +21,27 @@ class Article(Base):
     __tablename__ = "articles"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_name: Mapped[str] = mapped_column(String, index=True, nullable=False)  # commodity key (e.g. "copper")
-    publish_date: Mapped[datetime] = mapped_column(DateTime, index=True, nullable=False)
+
+    # ターゲット識別
+    target: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    collection_mode: Mapped[str] = mapped_column(String, nullable=False, default="analyze")  # monitor / analyze
+
+    # 時系列3点アンカー
+    event_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)   # LLM抽出（事象発生日）
+    publish_date: Mapped[datetime] = mapped_column(DateTime, index=True, nullable=False)  # GDELT seendate
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)               # 収集実行日時
+
+    # コンテンツ（raw_dataから昇格）
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_domain: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
     url: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     raw_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    body: Mapped[str | None] = mapped_column(Text, nullable=True)          # スクレイプ済み本文
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # LLM分析
     is_llm_processed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    llm_analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True) # 構造化分析結果
+    llm_analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 def init_db():
