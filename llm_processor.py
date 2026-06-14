@@ -3,7 +3,7 @@ LLM分析スケジューラ
 
 DB内の未処理記事に対して記事単位でLLM分析を実行し、llm_analysis カラムに保存する。
 収集モードに関わらず全記事に同一のフル分析スキーマを適用する。
-event_date は llm_analysis の中に加えて独立カラムにも昇格させる（時系列クエリ用）。
+event_date は独立カラムにのみ保存する（時系列SQLクエリ用）。llm_analysis には含めない。
 """
 
 import json
@@ -203,7 +203,6 @@ def run_all(backend) -> None:
             "tone":         result.get("tone"),
             "reason":       result.get("reason"),
             "why_notable":  result.get("why_notable"),
-            "event_date":   event_date_str,
             "causal":       result.get("causal"),
             "drivers":      result.get("drivers", []),
         }

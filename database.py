@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, date
-from sqlalchemy import create_engine, Integer, String, DateTime, Boolean, Date, Text, ARRAY
+from sqlalchemy import create_engine, Integer, String, DateTime, Boolean, Date, Text
 from sqlalchemy.orm import sessionmaker, declarative_base, Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import JSONB
 from dotenv import load_dotenv
@@ -24,7 +24,7 @@ class Article(Base):
 
     # ターゲット識別
     target: Mapped[str] = mapped_column(String, index=True, nullable=False)
-    collection_mode: Mapped[str] = mapped_column(String, nullable=False, default="analyze")  # monitor / analyze
+    collection_mode: Mapped[str] = mapped_column(String, nullable=False, default="monitor")  # monitor / analyze
 
     # 時系列3点アンカー
     event_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)   # LLM抽出（事象発生日）
