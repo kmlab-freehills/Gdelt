@@ -114,6 +114,7 @@ Return ONLY valid JSON with this exact structure:
   "rating": <1, 2, or 3, or null if excluded>,
   "excluded": <true or false>,
   "tone": <"bullish", "bearish", or "neutral">,
+  "tone_score": <-100.0 to +100.0, overall article sentiment, positive=positive coverage, negative=negative coverage>,
   "reason": "<1-2 sentence evaluation in Japanese>",
   "why_notable": "<why this breaks consensus, in Japanese, or null if rating < 2>",
   "event_date": "<YYYY-MM-DD of the actual event described, or null if unclear>",
@@ -133,6 +134,7 @@ Rating guide:
 - null + excluded=true: Irrelevant, duplicate, market summary, or unrelated to {target_label} demand
 
 tone: bullish=demand increase signal, bearish=demand decrease signal, neutral=mixed/unclear
+tone_score: overall article sentiment aligned with GDELT V2Tone scale (-100=very negative, 0=neutral, +100=very positive), independent of demand direction
 event_date: the date the described event actually occurred (not the article publication date)
 causal fields: null is acceptable when the article does not contain enough information
 """
@@ -201,6 +203,7 @@ def run_all(backend) -> None:
             "rating":       result.get("rating"),
             "excluded":     result.get("excluded", False),
             "tone":         result.get("tone"),
+            "tone_score":   result.get("tone_score"),
             "reason":       result.get("reason"),
             "why_notable":  result.get("why_notable"),
             "causal":       result.get("causal"),

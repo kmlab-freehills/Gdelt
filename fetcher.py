@@ -55,6 +55,7 @@ def fetch_and_store(target_key: str, mode: str) -> None:
     queries = mode_config["queries"]
     timespan = mode_config["timespan"]
     max_records = mode_config["max_records"]
+    sourcelang = config.get("sourcelang", "eng")
     fetched_at = datetime.now(timezone.utc)
 
     jitter = random.uniform(2, 7)
@@ -75,7 +76,7 @@ def fetch_and_store(target_key: str, mode: str) -> None:
             reraise=True,
         )
         def _fetch_with_retry(query=q):
-            return fetch_articles(query, timespan=timespan, max_records=max_records)
+            return fetch_articles(query, timespan=timespan, max_records=max_records, sourcelang=sourcelang)
 
         try:
             results = _fetch_with_retry()

@@ -52,16 +52,18 @@ _NF = (
     ' -"price today" -"market wrap" -"earnings report"'
 )
 
-_YAML_PATH = Path(__file__).parent / "targets" / "commodities.yaml"
+_TARGETS_DIR = Path(__file__).parent / "targets"
 
 
-def _load_targets(path: Path) -> Dict[str, Dict]:
+def _load_targets(dir_path: Path) -> Dict[str, Dict]:
     if not _YAML_AVAILABLE:
         raise ImportError("pyyaml が未インストールです。pip install pyyaml で導入してください。")
-    if not path.exists():
-        raise FileNotFoundError(f"ターゲット定義ファイルが見つかりません: {path}")
-    with open(path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    if not dir_path.exists():
+        raise FileNotFoundError(f"ターゲット定義ディレクトリが見つかりません: {dir_path}")
+    data: Dict[str, Dict] = {}
+    for yaml_path in sorted(dir_path.glob("*.yaml")):
+        with open(yaml_path, encoding="utf-8") as f:
+            data.update(yaml.safe_load(f) or {})
     # 各モードの全クエリにノイズフィルタを付加
     for target_config in data.values():
         for mode in ("monitor", "analyze"):
@@ -73,7 +75,7 @@ def _load_targets(path: Path) -> Dict[str, Dict]:
     return data
 
 
-TARGETS: Dict[str, Dict] = _load_targets(_YAML_PATH)
+TARGETS: Dict[str, Dict] = _load_targets(_TARGETS_DIR)
 
 
 # ============================================================
@@ -197,7 +199,9 @@ def enrich_articles_with_text(articles: List[Dict]) -> None:
             print(f"  [{i}/{total}] {domain}: {status}", flush=True)
 
 
-def fetch_articles(query: str, timespan: str = "1d", max_records: int = 10) -> List[Dict]:
+def fetch_articles(
+    query: str, timespan: str = "1d", max_records: int = 10, sourcelang: str = "eng"
+) -> List[Dict]:
     """GDELT DOC API から記事一覧を取得する。"""
     global _GDELT_LAST_REQUEST_TIME, _CIRCUIT_OPEN_UNTIL, _CIRCUIT_FAIL_COUNT
 
@@ -213,7 +217,7 @@ def fetch_articles(query: str, timespan: str = "1d", max_records: int = 10) -> L
         "maxrecords": max_records,
         "timespan": timespan,
         "format": "json",
-        "sourcelang": "eng",
+        "sourcelang": sourcelang,
     }
 
     for attempt in range(1, MAX_RETRIES + 1):
