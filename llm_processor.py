@@ -19,7 +19,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 
 from database import Article, SessionLocal, init_db
-from demand_fetcher import TARGETS
+from ngrams_fetcher import TARGETS
 
 load_dotenv()
 

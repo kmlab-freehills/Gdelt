@@ -1,57 +1,50 @@
 # targets/infrastructure.yaml
 # 都市インフラ課題の検証用ターゲット（テスト目的で追加）。
-# ノイズフィルタは demand_fetcher.py が自動付加する。クエリに記載不要。
-# GDELT DOC API ブール構文: OR（大文字必須）、-（NOT）、"フレーズ"
-# ワイルドカード(*)は非対応（0件になった実測結果より）。commodities.yamlに倣い
-# 「トピック語/フレーズ + (OR群1つ)」の1段構成に留めること。AND条件を積み重ねると
-# ヒット数が急減するため、狙いを分けたい場合はクエリ自体を複数に分割する。
 #
-# sourcelang: "jpn" を指定し、日本語ソースの記事に絞り込む。
-# GDELTはTranslingualで非英語記事を機械翻訳して英語インデックスに載せる仕組みのため、
-# クエリ自体は英語のまま書く（sourcelangで対象記事の言語を絞り、クエリ語で
-# 検索インデックス側の言語に合わせる、という役割分担）。
+# GDELT v5 quadgram ngrams版クエリ定義。
+#
+# 各クエリは "must" リストを持つ。要素は以下のいずれか:
+#   - 文字列: 必須フレーズ（4語以内、小文字）
+#   - 文字列のリスト: うち少なくとも1つが必須（ORグループ）
+# オプションで "exclude"（1つでも含まれたら不一致）。
+# グローバル除外フィルタ（ngrams_fetcher.GLOBAL_EXCLUDE）は全クエリに自動付加される。
+#
+# lang: tocのlangコード。この言語の記事のみが照合対象になる。
+#
+# 【言語方針】当初は lang: "ja"（日本語ネイティブキーワード）で運用したが、
+# 12時間の実測でGDELT ngramsの日本語記事は約77件/時と母数が少なく、
+# analyze一致0件だったため、いったん英語ヒット狙いに切り替えた（2026-07-13）。
+# 日本語版クエリはgit履歴を参照。
 #
 # monitor: 幅広いクエリで速報性重視の証拠収集
 # analyze: 老朽化・予算不足などの因果関係に絞り込んだクエリ
 
 "aging_water_infrastructure":
-  label: "水道管老朽化 (Aging Water Infrastructure, Japan)"
-  sourcelang: "jpn"
+  label: "水道管老朽化 (Aging Water Infrastructure)"
+  lang: "en"
   monitor:
-    interval_minutes: 120
-    timespan: "3d"
-    max_records: 15
     queries:
-      - 'water main (break OR burst OR rupture)'
-      - '"water infrastructure" (crisis OR failure OR outdated OR aging)'
+      - must: ["water main", ["break", "breaks", "broke", "burst", "rupture"]]
+      - must: ["water infrastructure", ["crisis", "failure", "outdated", "aging"]]
   analyze:
-    interval_minutes: 720
-    timespan: "1m"
-    max_records: 10
     queries:
-      - '"aging water infrastructure" OR "aging pipes"'
-      - 'water main (aging OR deteriorating OR outdated OR corroding)'
-      - 'water utility (underfunded OR "budget shortfall" OR "funding gap" OR "lack of investment")'
-      - '"lead pipes" (replacement OR funding OR delay OR backlog)'
-      - '"water infrastructure" (investment OR funding OR budget)'
+      - must: [["aging water infrastructure", "aging pipes", "aging water pipes"]]
+      - must: ["water main", ["aging", "deteriorating", "outdated", "corroding"]]
+      - must: ["water utility", ["underfunded", "budget shortfall", "funding gap", "underinvestment"]]
+      - must: ["lead pipes", ["replacement", "funding", "delay", "backlog"]]
+      - must: ["water infrastructure", ["investment", "funding", "budget"]]
 
 "seismic_building_risk":
-  label: "非耐震建築物 (Seismic Building Risk, Japan)"
-  sourcelang: "jpn"
+  label: "非耐震建築物 (Seismic Building Risk)"
+  lang: "en"
   monitor:
-    interval_minutes: 120
-    timespan: "3d"
-    max_records: 15
     queries:
-      - '"seismic retrofit" (delay OR backlog OR funding)'
-      - '"unreinforced masonry" (building OR risk OR retrofit)'
+      - must: ["seismic retrofit", ["delay", "backlog", "funding"]]
+      - must: ["unreinforced masonry", ["building", "buildings", "risk", "retrofit"]]
   analyze:
-    interval_minutes: 720
-    timespan: "1m"
-    max_records: 10
     queries:
-      - '"seismic retrofit" (funding OR budget OR delay OR backlog OR shortfall)'
-      - '"unreinforced masonry" (building OR retrofit OR vulnerable)'
-      - 'building (seismic OR earthquake) (retrofit OR compliance OR upgrade)'
-      - '"earthquake risk" building (funding OR budget OR retrofit)'
-      - 'seismic (retrofit OR safety) (funding OR budget OR shortfall)'
+      - must: ["seismic retrofit", ["funding", "budget", "delay", "backlog", "shortfall"]]
+      - must: ["unreinforced masonry", ["building", "buildings", "retrofit", "vulnerable"]]
+      - must: [["seismic", "earthquake"], "building", ["retrofit", "compliance", "upgrade"]]
+      - must: ["earthquake risk", "building", ["funding", "budget", "retrofit"]]
+      - must: ["seismic", ["retrofit", "safety"], ["funding", "budget", "shortfall"]]

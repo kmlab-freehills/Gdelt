@@ -1,33 +1,43 @@
 # GDELT 需要シグナル収集・分析システム
 
-このシステムは、GDELT Doc APIからコモディティ関連ニュースを定期的に収集し、PostgreSQLに保存、GeminiによるLLM分析を経て、REST API経由で需要シグナルを提供します。
+このシステムは、GDELT v5 quadgram ngramsファイル（`weblegacy/ngrams`）からコモディティ・インフラ関連ニュースを定期的に収集し、PostgreSQLに保存、GeminiによるLLM分析を経て、REST API経由で需要シグナルを提供します。
+
+## データソース: GDELT v5 quadgram ngrams
+
+旧GDELT DOC 2.0 APIはレート制限（429エラー）が頻発し実運用が困難だったため、認証・レート制限のない静的GCSホスティングの ngrams ファイルへ移行しました。
+
+- 配信URL: `https://storage.googleapis.com/data.gdeltproject.org/gdeltv5/weblegacy/ngrams/YYYYMMDDHHMMSS.{ngrams.txt,toc.json}.gz`（タイムスタンプはUTC、秒は常に`00`）
+- 15分ハートビートでまとめて生成されるが生成タイミングはドリフトするため、`fetcher.py` は**全分をプローブして404を許容**する実装になっています
+- 公開遅延は実測2〜3分。5分前のタイムスタンプまでを取得します
+- `.ngrams.txt.gz`: タブ区切り3列（DOCID・QUADGRAM・COUNT）。QUADGRAMは英語等はスペース区切り最大4トークン、日本語・中国語等（scriptio continua）は連続4文字
+- `.toc.json.gz`: 改行区切りJSON。1行1記事（ID・date・img・lang・title・url）
+- DOCIDはファイルごとにリセットされるため、ngramsとtocは常にペアで扱います
 
 ## 主な機能
 
-- **フェッチャー (fetcher.py)**: `targets/commodities.yaml` に定義されたコモディティごとに定期収集。ドメインブラックリスト・タイトル重複排除・trafilaturaによる本文スクレイピングを実施。429エラー時は自動リトライ。
-- **LLMプロセッサ (llm_processor.py)**: DB内の未処理記事をコモディティごとにバッチ処理し、Geminiによる需要シグナル分析（★評価・除外判定・ドライバー特定・top3）を `llm_analysis` カラムに保存。
-- **API (api.py)**: FastAPIによるデータ提供。コモディティ・日付・LLM処理状態でフィルタリング可能。
+- **フェッチャー (fetcher.py)**: 5分ごとに `catch_up()` を実行し、DBに保存したカーソルから現在時刻-5分まで1分刻みでngrams/tocペアを取得・照合・保存。クラッシュ耐性のためタイムスタンプ処理1件ごとにカーソルを保存。
+- **照合エンジン (ngrams_fetcher.py)**: `targets/*.yaml` のブール式クエリ（must/exclude）を、英語等はトークン列の連続部分列一致、CJKは4文字窓一致で評価。ドメインブラックリスト・trafilaturaによる本文スクレイピングも実施。
+- **LLMプロセッサ (llm_processor.py)**: DB内の未処理記事をターゲットごとにバッチ処理し、Geminiによる需要シグナル分析（★評価・除外判定・ドライバー特定）を `llm_analysis` カラムに保存。
+- **API (api.py)**: FastAPIによるデータ提供。ターゲット・日付・LLM処理状態でフィルタリング可能。
 - **Docker対応**: DB・フェッチャー・LLMプロセッサ・APIの4サービスをDocker Composeで一元管理。
 
 ## ディレクトリ構造
 
 ```
 /
-├── demand_fetcher.py       # コア収集ロジック（フィルタリング・スクレイプ・LLMプロンプト生成）
-├── fetcher.py              # 定期収集スケジューラ
+├── ngrams_fetcher.py       # コア収集ロジック（ダウンロード・照合エンジン・フィルタリング・スクレイプ）
+├── fetcher.py              # 定期収集スケジューラ（5分ごとcatch_up）
 ├── llm_processor.py        # LLM分析スケジューラ（Gemini → DB保存）
-├── database.py             # DBモデル定義
+├── database.py             # DBモデル定義（Article・FetchState）
 ├── api.py                  # REST API サーバー
 ├── targets/
-│   └── commodities.yaml    # コモディティ定義（クエリ・ラベル）
+│   ├── commodities.yaml    # コモディティ定義（must/excludeクエリ・ラベル・lang）
+│   └── infrastructure.yaml # インフラ課題定義（日本語ネイティブキーワード）
 ├── docker-compose.yml      # 全サービス構成
 ├── Dockerfile              # コンテナ定義
 ├── .env.example            # 環境変数テンプレート
-├── requirements.txt
-└── roadmap.yaml            # 開発ロードマップ
+└── requirements.txt
 ```
-
-> このシステムは **Kizue_get_demand ブランチ**（収集・フィルタリング・LLMプロンプト生成）と **Migita ブランチ**（DB・スケジューラ・APIインフラ）を統合したものです。
 
 ## セットアップ手順
 
@@ -36,7 +46,6 @@
 ```bash
 git clone <repository_url>
 cd <repository_directory>
-git checkout integration
 ```
 
 ### 2. 環境変数の設定
@@ -59,8 +68,8 @@ POSTGRES_USER=gdelt_user
 POSTGRES_PASSWORD=gdelt_password
 POSTGRES_DB=gdelt_db
 
-# スケジュール間隔（任意）
-FETCH_INTERVAL_HOURS=6
+# 初回起動時（カーソル未設定）に何分前まで遡ってngramsを取得するか
+NGRAMS_BACKFILL_MINUTES=60
 LLM_INTERVAL_HOURS=6
 ```
 
@@ -75,7 +84,7 @@ docker compose up -d --build
 | コンテナ | 役割 | ポート |
 |---|---|---|
 | `gdelt_postgres` | PostgreSQL データベース | 5432 |
-| `gdelt_fetcher` | 定期収集ワーカー | - |
+| `gdelt_fetcher` | 定期収集ワーカー（5分ごとcatch_up） | - |
 | `gdelt_llm_processor` | LLM分析ワーカー | - |
 | `gdelt_api` | REST API サーバー | 8000 |
 
@@ -92,36 +101,38 @@ docker logs -f gdelt_api
 スケジュール実行を待たずに即時実行したい場合：
 
 ```bash
-# 収集（copper のみ）
+# 収集（catch_upを1回実行）
 docker exec gdelt_fetcher python -c \
-  "from fetcher import fetch_and_store_commodity; fetch_and_store_commodity('copper')"
+  "from fetcher import catch_up; catch_up()"
 
-# LLM処理（copper のみ）
-docker exec gdelt_llm_processor python -c \
-  "from llm_processor import process_commodity, _get_llm_backend; \
-   process_commodity('copper', _get_llm_backend())"
-
-# LLM処理（全コモディティ）
+# LLM処理（全ターゲット）
 docker exec gdelt_llm_processor python -c \
   "from llm_processor import run_all, _get_llm_backend; run_all(_get_llm_backend())"
 
 # llm_analysis のリセット（再処理したいとき）
 docker exec gdelt_postgres psql -U gdelt_user -d gdelt_db -c \
-  "UPDATE articles SET is_llm_processed=false, llm_analysis=null WHERE task_name='copper';"
+  "UPDATE articles SET is_llm_processed=false, llm_analysis=null WHERE target='copper';"
 ```
 
-## コモディティの追加
+## ターゲットの追加
 
-`targets/commodities.yaml` にエントリを追加するだけで次回収集から対象に含まれます。コードの変更は不要です。
+`targets/*.yaml` にエントリを追加するだけで次回収集から対象に含まれます。コードの変更は不要です。
 
 ```yaml
 "lithium":
   label: "リチウム (Lithium)"
-  queries:
-    - '"lithium demand" (surge OR shortage OR deficit)'
-    - 'lithium (consumption OR procurement) (surge OR shortage OR increase)'
-    - 'lithium demand ("beats expectations" OR "ahead of forecast" OR unexpected)'
+  lang: "en"
+  monitor:
+    queries:
+      - must: ["lithium", ["demand", "shortage", "surplus"]]
+  analyze:
+    queries:
+      - must: ["lithium demand", ["surge", "shortage", "deficit"]]
+      - must: ["lithium", ["consumption", "procurement"], ["surge", "shortage", "increase"]]
+      - must: ["lithium demand", ["beats expectations", "ahead of forecast", "unexpected"]]
 ```
+
+各クエリの `must` は「文字列（必須フレーズ）」または「文字列のリスト（ORグループ、うち1つ以上必須）」の配列です。`exclude` を指定すると、いずれかが含まれる記事を除外できます。`lang` はtocの言語コード（`en`/`ja`/`zh`等）で、その言語の記事のみが照合対象になります。CJK言語では4文字を超えるフレーズも4文字窓の照合で正しく扱われます。
 
 ## API の利用
 
@@ -133,8 +144,8 @@ APIサーバー起動後、Swagger UIでエンドポイントを確認できま�
 
 | エンドポイント | 説明 |
 |---|---|
-| `GET /api/v1/articles` | 記事一覧（commodity・日付・is_llm_processed でフィルタ可） |
-| `GET /api/v1/stats` | コモディティごとの収集件数・LLM処理件数・最新記事日時 |
+| `GET /api/v1/articles` | 記事一覧（target・日付・is_llm_processed でフィルタ可） |
+| `GET /api/v1/stats` | ターゲットごとの収集件数・LLM処理件数・最新記事日時 |
 
 `llm_analysis` フィールドの構造：
 
@@ -142,9 +153,12 @@ APIサーバー起動後、Swagger UIでエンドポイントを確認できま�
 {
   "rating": 3,
   "excluded": false,
+  "tone": "bullish",
+  "tone_score": 42.0,
   "reason": "判定理由（日本語）",
-  "drivers": ["需要ドライバー1", "需要ドライバー2"],
-  "top3": [{"id": 5, "why_consensus_breaking": "コンセンサスを超える理由"}]
+  "why_notable": "コンセンサスを超える理由（日本語）",
+  "causal": {"trigger": "...", "mechanism": "...", "effect": "...", "timeframe": "short"},
+  "drivers": ["需要ドライバー1", "需要ドライバー2"]
 }
 ```
 
@@ -163,12 +177,12 @@ APIサーバー起動後、Swagger UIでエンドポイントを確認できま�
 |---|---|---|
 | 3 | API拡張（手動トリガー・評価フィルタ） | 🔲 未着手 |
 | 4 | ローカルLLMへの差し替え | 🔲 未着手 |
-| 5 | コモディティ自動生成（LLMでYAML拡張） | 🔲 未着手 |
+| 5 | ターゲット自動生成（LLMでYAML拡張） | 🔲 未着手 |
 
 ---
 
 ### 注意事項
 
-- **GDELTのレート制限**: 429エラーが頻発する場合は数分待機してから再実行してください。`demand_fetcher.py` の `SLEEP_BETWEEN_QUERIES`（現在12秒）で間隔を調整できます。
-- **ドメインブラックリスト**: `sourcelang=eng` 指定でも混入する非英語ドメインは `demand_fetcher.py` の `DOMAIN_BLACKLIST` に随時追加してください。
+- **ngramsファイルの取りこぼし**: ネットワークエラー等で取得に失敗した場合はカーソルを進めずにcatch_upを終了し、次回実行時に再開します。0バイトファイルや404は正常系としてスキップしカーソルを進めます。
+- **ドメインブラックリスト**: プレスリリース配信系・アグリゲーター系の低品質ドメインは `ngrams_fetcher.py` の `DOMAIN_BLACKLIST` に随時追加してください（非英語ドメインは `lang` フィルタで対応できるため対象外）。
 - **ローカルLLMへの差し替え**: `llm_processor.py` の `_get_llm_backend()` に `call(prompt: str) -> str` インターフェースを実装するだけで切り替え可能です。

@@ -44,6 +44,15 @@ class Article(Base):
     llm_analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
+class FetchState(Base):
+    """収集カーソル等の永続化用テーブル（クラッシュ耐性のための状態保存）。"""
+
+    __tablename__ = "fetch_state"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(String, nullable=False)
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
 

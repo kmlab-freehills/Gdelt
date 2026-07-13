@@ -1,29 +1,25 @@
 """
-定期収集スケジューラ
+定期収集スケジューラ - GDELT v5 quadgram ngrams版
 
-targets/commodities.yaml の各ターゲットについて
-Monitor（速報性重視・広域）と Analyze（需要シグナル特化）の収集ジョブを
-APScheduler で管理する。どちらか一方のみ定義されたターゲットも正しく動作する。
+5分ごとに catch_up() を実行し、DBに保存したカーソル（最後に処理したタイムスタンプ）
+から現在時刻(UTC)-5分まで、1分刻みで全タイムスタンプをプローブして
+ngrams/tocペアをダウンロード・照合・保存する。
 """
 
 import logging
 import os
-import random
 import time
 from datetime import datetime, timezone, timedelta
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 from sqlalchemy.exc import IntegrityError
-from tenacity import before_sleep_log, retry, stop_after_attempt, wait_fixed
 
-from database import Article, SessionLocal, init_db
-from demand_fetcher import (
-    DOMAIN_BLACKLIST,
-    SLEEP_BETWEEN_QUERIES,
-    TARGETS,
+from database import Article, FetchState, SessionLocal, init_db
+from ngrams_fetcher import (
+    download_ngrams_pair,
     enrich_articles_with_text,
-    fetch_articles,
+    match_articles,
     normalize_title,
 )
 
@@ -36,111 +32,83 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+CURSOR_KEY = "ngrams_cursor"
+PUBLISH_DELAY_MINUTES = 5  # 公式推奨: 5分前のタイムスタンプまでを取得
+BACKFILL_MINUTES = int(os.getenv("NGRAMS_BACKFILL_MINUTES", "60"))
+MAX_RETRIES = 2
+RETRY_WAIT_SECONDS = 5
 
-def fetch_and_store(target_key: str, mode: str) -> None:
-    """
-    指定ターゲットを指定モード（monitor / analyze）で収集してDBに保存する。
-    YAMLにそのモードが定義されていなければ何もしない。
-    """
-    config = TARGETS.get(target_key)
-    if not config:
-        logger.error(f"不明なターゲット: {target_key}")
-        return
 
-    mode_config = config.get(mode)
-    if not mode_config:
-        return
+def _get_cursor(session) -> datetime | None:
+    row = session.get(FetchState, CURSOR_KEY)
+    if not row:
+        return None
+    return datetime.strptime(row.value, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
 
-    label = config["label"]
-    queries = mode_config["queries"]
-    timespan = mode_config["timespan"]
-    max_records = mode_config["max_records"]
-    sourcelang = config.get("sourcelang", "eng")
-    fetched_at = datetime.now(timezone.utc)
 
-    jitter = random.uniform(2, 7)
-    logger.info(f"[{label}/{mode}] {jitter:.1f}秒待機後に収集開始 (timespan={timespan}, max={max_records})")
-    time.sleep(jitter)
+def _set_cursor(session, ts: datetime) -> None:
+    value = ts.strftime("%Y%m%d%H%M%S")
+    row = session.get(FetchState, CURSOR_KEY)
+    if row:
+        row.value = value
+    else:
+        row = FetchState(key=CURSOR_KEY, value=value)
+        session.add(row)
+    session.commit()
+
+
+def _save_articles(articles: list[dict]) -> tuple[int, int]:
+    """記事リストをURL・正規化タイトルで重複排除しDBへ保存する。"""
+    if not articles:
+        return 0, 0
 
     seen_urls: set[str] = set()
     seen_titles: set[str] = set()
-    articles: list[dict] = []
-
-    for q in queries:
-        logger.info(f"[{label}/{mode}] クエリ: {q[:80]}...")
-
-        @retry(
-            stop=stop_after_attempt(3),
-            wait=wait_fixed(300),
-            before_sleep=before_sleep_log(logger, logging.WARNING),
-            reraise=True,
-        )
-        def _fetch_with_retry(query=q):
-            return fetch_articles(query, timespan=timespan, max_records=max_records, sourcelang=sourcelang)
-
-        try:
-            results = _fetch_with_retry()
-        except Exception as e:
-            logger.error(f"[{label}/{mode}] クエリ取得断念: {e}")
-            time.sleep(SLEEP_BETWEEN_QUERIES)
+    deduped: list[dict] = []
+    for art in articles:
+        url = art.get("url", "")
+        title = art.get("title", "")
+        if url and url in seen_urls:
             continue
+        norm = normalize_title(title)
+        if norm and norm in seen_titles:
+            continue
+        if url:
+            seen_urls.add(url)
+        if norm:
+            seen_titles.add(norm)
+        deduped.append(art)
 
-        new_count = 0
-        for art in results:
-            url = art.get("url", "")
-            domain = art.get("domain", "")
-            title = art.get("title", "")
-
-            if any(domain == b or domain.endswith("." + b) for b in DOMAIN_BLACKLIST):
-                continue
-            if url and url in seen_urls:
-                continue
-            norm = normalize_title(title)
-            if norm and norm in seen_titles:
-                continue
-
-            if url:
-                seen_urls.add(url)
-            if norm:
-                seen_titles.add(norm)
-            articles.append(art)
-            new_count += 1
-
-        logger.info(f"[{label}/{mode}] クエリ完了: 新規 {new_count} 件 (累計 {len(articles)} 件)")
-        time.sleep(SLEEP_BETWEEN_QUERIES)
-
-    if not articles:
-        logger.info(f"[{label}/{mode}] 取得記事なし")
-        return
-
-    enrich_articles_with_text(articles)
+    enrich_articles_with_text(deduped)
 
     session = SessionLocal()
     inserted = 0
     skipped = 0
     try:
-        for art in articles:
+        for art in deduped:
             url = art.get("url")
             if not url:
                 continue
 
-            seendate_str = art.get("seendate", "")
             try:
-                publish_date = datetime.strptime(seendate_str, "%Y%m%dT%H%M%SZ").replace(
-                    tzinfo=timezone.utc
+                publish_date = datetime.fromisoformat(
+                    art.get("seendate", "").replace("Z", "+00:00")
                 )
             except (ValueError, TypeError):
                 publish_date = datetime.now(timezone.utc)
 
+            raw_data = dict(art.get("raw") or {})
+            raw_data["matched_query"] = art.get("matched_query")
+
             new_article = Article(
-                target=target_key,
-                collection_mode=mode,
+                target=art.get("matched_target"),
+                collection_mode=art.get("matched_mode"),
                 publish_date=publish_date,
-                fetched_at=fetched_at,
+                fetched_at=datetime.now(timezone.utc),
                 title=art.get("title"),
                 source_domain=art.get("domain"),
                 url=url,
-                raw_data=art,
+                raw_data=raw_data,
                 body=art.get("body"),
             )
             session.add(new_article)
@@ -152,11 +120,83 @@ def fetch_and_store(target_key: str, mode: str) -> None:
                 skipped += 1
             except Exception as e:
                 session.rollback()
-                logger.error(f"[{label}/{mode}] DB保存エラー: {e}")
+                logger.error(f"DB保存エラー: {e}")
     finally:
         session.close()
 
-    logger.info(f"[{label}/{mode}] 保存完了 (新規: {inserted}, 重複スキップ: {skipped})")
+    return inserted, skipped
+
+
+def _process_timestamp(ts: datetime) -> bool:
+    """1タイムスタンプを処理する。成功したら True、ネットワークエラーで断念したら False。"""
+    ts_str = ts.strftime("%Y%m%d%H%M%S")
+
+    for attempt in range(1, MAX_RETRIES + 2):
+        try:
+            ngrams_lines, toc = download_ngrams_pair(ts_str)
+            break
+        except Exception as e:
+            if attempt > MAX_RETRIES:
+                logger.error(f"[{ts_str}] ダウンロード失敗、リトライ上限到達: {e}")
+                return False
+            logger.warning(f"[{ts_str}] ダウンロードエラー、{RETRY_WAIT_SECONDS}秒後リトライ ({attempt}/{MAX_RETRIES}): {e}")
+            time.sleep(RETRY_WAIT_SECONDS)
+
+    if ngrams_lines is None or toc is None:
+        logger.info(f"[{ts_str}] ファイルなし（404/空）、スキップ")
+        return True
+
+    articles = match_articles(ngrams_lines, toc)
+    if not articles:
+        logger.info(f"[{ts_str}] 一致記事なし (ngrams行数={len(ngrams_lines)}, toc件数={len(toc)})")
+        return True
+
+    inserted, skipped = _save_articles(articles)
+    logger.info(
+        f"[{ts_str}] 一致 {len(articles)} 件 → 保存 {inserted} 件, 重複スキップ {skipped} 件"
+    )
+    return True
+
+
+def catch_up() -> None:
+    """カーソルから現在時刻-5分まで1分刻みで追いつく。"""
+    session = SessionLocal()
+    try:
+        cursor = _get_cursor(session)
+    finally:
+        session.close()
+
+    now = datetime.now(timezone.utc)
+    limit = (now - timedelta(minutes=PUBLISH_DELAY_MINUTES)).replace(second=0, microsecond=0)
+
+    if cursor is None:
+        start = limit - timedelta(minutes=BACKFILL_MINUTES)
+        logger.info(f"カーソル未設定。{BACKFILL_MINUTES}分前から開始: {start.isoformat()}")
+    else:
+        start = cursor + timedelta(minutes=1)
+
+    if start > limit:
+        logger.info("追いつくべき新規タイムスタンプなし")
+        return
+
+    ts = start
+    processed_count = 0
+    while ts <= limit:
+        ok = _process_timestamp(ts)
+        if not ok:
+            logger.warning(f"[{ts.strftime('%Y%m%d%H%M%S')}] で断念。次回catch_upで再開する")
+            break
+
+        session = SessionLocal()
+        try:
+            _set_cursor(session, ts)
+        finally:
+            session.close()
+
+        processed_count += 1
+        ts += timedelta(minutes=1)
+
+    logger.info(f"catch_up完了: {processed_count} 分間分を処理")
 
 
 def main() -> None:
@@ -164,24 +204,16 @@ def main() -> None:
     init_db()
 
     scheduler = BlockingScheduler()
-
-    for target_key, config in TARGETS.items():
-        label = config.get("label", target_key)
-        for mode in ("monitor", "analyze"):
-            mode_config = config.get(mode)
-            if not mode_config:
-                continue
-            interval = mode_config["interval_minutes"]
-            scheduler.add_job(
-                fetch_and_store,
-                "interval",
-                minutes=interval,
-                args=[target_key, mode],
-                id=f"{mode}_{target_key}",
-                next_run_time=datetime.now(timezone.utc) + timedelta(minutes=interval),
-                misfire_grace_time=600,
-            )
-            logger.info(f"タスク登録: [{label}/{mode}] ({interval}分ごと, timespan={mode_config['timespan']})")
+    scheduler.add_job(
+        catch_up,
+        "interval",
+        minutes=5,
+        id="ngrams_catch_up",
+        next_run_time=datetime.now(timezone.utc),
+        misfire_grace_time=600,
+        max_instances=1,
+    )
+    logger.info("タスク登録: [ngrams catch_up] (5分ごと)")
 
     try:
         logger.info("スケジューラ開始")

@@ -5,7 +5,6 @@ psycopg2-binary>=2.9.0
 requests>=2.31.0
 apscheduler>=3.10.0
 pyyaml>=6.0.0
-tenacity>=8.2.0
 python-dotenv>=1.0.0
 trafilatura
 google-genai

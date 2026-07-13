@@ -1,6 +1,14 @@
 # targets/commodities.yaml
-# ノイズフィルタは demand_fetcher.py が自動付加する。クエリに記載不要。
-# GDELT DOC API ブール構文: OR（大文字必須）、-（NOT）、"フレーズ"
+# GDELT v5 quadgram ngrams版クエリ定義。
+#
+# 各クエリは "must" リストを持つ。要素は以下のいずれか:
+#   - 文字列: 必須フレーズ（4語以内、小文字）
+#   - 文字列のリスト: うち少なくとも1つが必須（ORグループ）
+# オプションで "exclude"（1つでも含まれたら不一致）。
+# グローバル除外フィルタ（ngrams_fetcher.GLOBAL_EXCLUDE）は全クエリに自動付加されるため
+# ここに記載不要。
+#
+# lang: tocのlangコード（en/ja/zh等）。この言語の記事のみが照合対象になる。
 #
 # monitor: 幅広いクエリで速報性重視の証拠収集（Migita的）
 # analyze: 需要シグナルに特化した絞り込みクエリ（Kizue的）
@@ -8,124 +16,94 @@
 
 "copper":
   label: "銅 (Copper)"
+  lang: "en"
   monitor:
-    interval_minutes: 60
-    timespan: "6h"
-    max_records: 20
     queries:
-      - 'copper (demand OR shortage OR surplus OR inventory OR stockpile)'
-      - 'copper market (rally OR squeeze OR disruption OR crunch)'
-      - '"red metal" (market OR demand OR shortage OR price)'
+      - must: ["copper", ["demand", "shortage", "surplus", "inventory", "stockpile"]]
+      - must: ["copper market", ["rally", "squeeze", "disruption", "crunch"]]
+      - must: ["red metal", ["market", "demand", "shortage", "price"]]
   analyze:
-    interval_minutes: 360
-    timespan: "1d"
-    max_records: 10
     queries:
-      - '"copper demand" (surge OR shortage OR deficit)'
-      - 'copper (consumption OR offtake OR procurement) (surge OR shortage OR increase)'
-      - '("red metal" OR "copper cathode") (demand OR shortage)'
-      - 'copper demand ("ahead of forecast" OR "exceeds forecast" OR "beats expectations")'
-      - '("unexpected" OR surprise) copper demand OR copper shortage bottleneck'
+      - must: ["copper demand", ["surge", "shortage", "deficit"]]
+      - must: ["copper", ["consumption", "offtake", "procurement"], ["surge", "shortage", "increase"]]
+      - must: [["red metal", "copper cathode"], ["demand", "shortage"]]
+      - must: ["copper demand", ["ahead of forecast", "exceeds forecast", "beats expectations"]]
+      - must: ["copper", ["unexpected", "surprise"], ["demand", "shortage", "bottleneck"]]
 
 "gold":
   label: "金 (Gold)"
+  lang: "en"
   monitor:
-    interval_minutes: 60
-    timespan: "6h"
-    max_records: 20
     queries:
-      - 'gold (demand OR shortage OR surplus OR buying OR selling)'
-      - '"central bank" gold (buying OR purchase OR reserve)'
-      - 'gold market (rally OR selloff OR surge)'
+      - must: ["gold", ["demand", "shortage", "surplus", "buying", "selling"]]
+      - must: ["central bank", "gold", ["buying", "purchase", "reserve"]]
+      - must: ["gold market", ["rally", "selloff", "surge"]]
   analyze:
-    interval_minutes: 360
-    timespan: "1d"
-    max_records: 10
     queries:
-      - '"gold demand" (record OR surge OR shortage OR deficit)'
-      - '"central bank" (gold OR bullion) (buying OR purchase OR demand)'
-      - '("bullion demand" OR "gold bullion" OR "physical gold") (surge OR shortage OR record)'
-      - '"gold demand" ("ahead of forecast" OR "beats expectations" OR unexpected OR "supply crunch")'
-      - '"gold imports" (surge OR ban OR restriction OR record)'
+      - must: ["gold demand", ["record", "surge", "shortage", "deficit"]]
+      - must: ["central bank", ["gold", "bullion"], ["buying", "purchase", "demand"]]
+      - must: [["bullion demand", "gold bullion", "physical gold"], ["surge", "shortage", "record"]]
+      - must: ["gold demand", ["ahead of forecast", "beats expectations", "unexpected", "supply crunch"]]
+      - must: ["gold imports", ["surge", "ban", "restriction", "record"]]
 
 "uranium":
   label: "ウラン (Uranium)"
+  lang: "en"
   monitor:
-    interval_minutes: 120
-    timespan: "12h"
-    max_records: 15
     queries:
-      - 'uranium (demand OR shortage OR supply OR reactor OR nuclear)'
-      - 'nuclear power (fuel OR reactor OR shortage OR demand)'
+      - must: ["uranium", ["demand", "shortage", "supply", "reactor", "nuclear"]]
+      - must: ["nuclear power", ["fuel", "reactor", "shortage", "demand"]]
   analyze:
-    interval_minutes: 720
-    timespan: "3d"
-    max_records: 10
     queries:
-      - '"uranium demand" (nuclear OR surge OR shortage)'
-      - 'uranium (consumption OR procurement) (reactor OR shortage OR surge)'
-      - '("yellowcake" OR "U3O8") (demand OR shortage)'
-      - 'uranium demand ("ahead of forecast" OR "beats expectations" OR unexpected)'
-      - 'uranium (shortage OR "supply crunch") reactor'
+      - must: ["uranium demand", ["nuclear", "surge", "shortage"]]
+      - must: ["uranium", ["consumption", "procurement"], ["reactor", "shortage", "surge"]]
+      - must: [["yellowcake", "u3o8"], ["demand", "shortage"]]
+      - must: ["uranium demand", ["ahead of forecast", "beats expectations", "unexpected"]]
+      - must: ["uranium", ["shortage", "supply crunch"], "reactor"]
 
 "rare earth":
   label: "レアアース (Rare Earth)"
+  lang: "en"
   monitor:
-    interval_minutes: 120
-    timespan: "12h"
-    max_records: 15
     queries:
-      - '"rare earth" (demand OR shortage OR supply OR restriction)'
-      - '("critical minerals" OR "strategic minerals") (shortage OR demand OR supply)'
+      - must: ["rare earth", ["demand", "shortage", "supply", "restriction"]]
+      - must: [["critical minerals", "strategic minerals"], ["shortage", "demand", "supply"]]
   analyze:
-    interval_minutes: 720
-    timespan: "3d"
-    max_records: 10
     queries:
-      - '"rare earth" (demand OR shortage) (surge OR critical)'
-      - '("critical minerals" OR "strategic minerals") (shortage OR demand)'
-      - '(neodymium OR dysprosium) (shortage OR demand)'
-      - '"rare earth" "export restriction"'
-      - '"rare earth" shortage ("ahead of" OR unexpected OR bottleneck)'
-      - '"critical minerals" bottleneck OR "rare earth" "supply crunch"'
+      - must: ["rare earth", ["demand", "shortage"], ["surge", "critical"]]
+      - must: [["critical minerals", "strategic minerals"], ["shortage", "demand"]]
+      - must: [["neodymium", "dysprosium"], ["shortage", "demand"]]
+      - must: ["rare earth", "export restriction"]
+      - must: ["rare earth", "shortage", ["ahead of", "unexpected", "bottleneck"]]
+      - must: [["critical minerals bottleneck", "rare earth supply crunch"]]
 
 "natural gas":
   label: "天然ガス・LNG (Natural Gas / LNG)"
+  lang: "en"
   monitor:
-    interval_minutes: 60
-    timespan: "6h"
-    max_records: 20
     queries:
-      - '("natural gas" OR LNG) (demand OR shortage OR surplus OR storage)'
-      - 'LNG (market OR cargo OR spot OR import OR export)'
-      - 'gas (shortage OR supply OR disruption OR demand)'
+      - must: [["natural gas", "lng"], ["demand", "shortage", "surplus", "storage"]]
+      - must: ["lng", ["market", "cargo", "spot", "import", "export"]]
+      - must: ["gas", ["shortage", "supply", "disruption", "demand"]]
   analyze:
-    interval_minutes: 360
-    timespan: "1d"
-    max_records: 10
     queries:
-      - '("natural gas" OR LNG) demand (surge OR record OR shortage)'
-      - '("gas consumption" OR "LNG imports") (record OR surge)'
-      - '("pipeline gas" OR LNG) (shortage OR "spot demand") surge'
-      - '("natural gas" OR LNG) demand ("ahead of forecast" OR "beats expectations" OR unexpected)'
-      - '("natural gas" OR LNG) "supply crunch" OR LNG bottleneck demand'
+      - must: [["natural gas", "lng"], "demand", ["surge", "record", "shortage"]]
+      - must: [["gas consumption", "lng imports"], ["record", "surge"]]
+      - must: [["pipeline gas", "lng"], ["shortage", "spot demand"], "surge"]
+      - must: [["natural gas", "lng"], "demand", ["ahead of forecast", "beats expectations", "unexpected"]]
+      - must: [["natural gas", "lng"], ["supply crunch", "lng bottleneck demand"]]
 
 "silver":
   label: "銀 (Silver)"
+  lang: "en"
   monitor:
-    interval_minutes: 120
-    timespan: "12h"
-    max_records: 15
     queries:
-      - 'silver (demand OR shortage OR supply OR industrial)'
-      - 'silver market (rally OR deficit OR squeeze)'
+      - must: ["silver", ["demand", "shortage", "supply", "industrial"]]
+      - must: ["silver market", ["rally", "deficit", "squeeze"]]
   analyze:
-    interval_minutes: 720
-    timespan: "3d"
-    max_records: 10
     queries:
-      - '"silver demand" (surge OR shortage OR deficit)'
-      - 'silver (consumption OR offtake) (solar OR increase OR surge)'
-      - '("silver bullion" OR "industrial silver") (shortage OR demand)'
-      - 'silver demand ("ahead of forecast" OR "beats expectations" OR unexpected)'
-      - 'silver (shortage OR "supply deficit") solar OR silver "supply crunch"'
+      - must: ["silver demand", ["surge", "shortage", "deficit"]]
+      - must: ["silver", ["consumption", "offtake"], ["solar", "increase", "surge"]]
+      - must: [["silver bullion", "industrial silver"], ["shortage", "demand"]]
+      - must: ["silver demand", ["ahead of forecast", "beats expectations", "unexpected"]]
+      - must: ["silver", ["shortage", "supply deficit"], ["solar", "supply crunch"]]
