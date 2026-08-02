@@ -32,7 +32,8 @@
 ├── api.py                  # REST API サーバー
 ├── targets/
 │   ├── commodities.yaml    # コモディティ定義（must/excludeクエリ・ラベル・lang）
-│   └── infrastructure.yaml # インフラ課題定義（日本語ネイティブキーワード）
+│   ├── infrastructure.yaml # インフラ課題定義（日本語ネイティブキーワード）
+│   └── construction.yaml   # 高層ビル・大規模建設の進捗追跡定義（英語+日本語）
 ├── docker-compose.yml      # 全サービス構成
 ├── Dockerfile              # コンテナ定義
 ├── .env.example            # 環境変数テンプレート
@@ -168,6 +169,102 @@ APIサーバー起動後、Swagger UIでエンドポイントを確認できま�
 | 2 | ★★☆ | 需要の二次的影響・周辺変化 |
 | 1 | ★☆☆ | 既知トレンドの再確認（参考情報） |
 | null | 除外 | 無関係・重複記事 |
+
+## ターゲット限定の常時収集パイプライン（fetcher_infra / llm_processor_infra）
+
+`targets/*.yaml` 全体ではなく特定ターゲットのみを、既存の `fetcher`/`llm_processor`（commodities向け）とは独立したカーソルで継続収集・分析したい場合に使います。現在は `targets/infrastructure.yaml` の4ターゲット（英語版 `aging_water_infrastructure`/`seismic_building_risk`、日本語版 `_ja` サフィックス2つ）向けに設定済みです。
+
+### 起動・停止
+
+```bash
+# 起動（dbも未起動なら自動起動）
+docker compose up -d fetcher_infra llm_processor_infra
+
+# ログ確認（15分ごとに収集・分析ログが出る）
+docker compose logs -f fetcher_infra llm_processor_infra
+
+# 停止（コンテナは削除されるがDBデータ・カーソルは保持される）
+docker compose stop fetcher_infra llm_processor_infra
+```
+
+`restart: no` のため、PC/Docker再起動後は自動復帰しません。使うたびに `docker compose up -d fetcher_infra llm_processor_infra` を実行してください。カーソル（最後に処理したタイムスタンプ、DBの `fetch_state` テーブルに `ngrams_cursor:<ターゲット一覧>` というキーで保存）は停止中も保持されるため、再開時は停止していた期間分を自動で追いつきます（ただしGDELT側でngramsファイルが失効していれば取りこぼします）。
+
+### 対象ターゲット・収集間隔の変更
+
+`docker-compose.yml` の該当サービスの `environment` を編集し、再ビルド・再起動してください。
+
+| 環境変数 | 対象サービス | 説明 |
+|---|---|---|
+| `TARGET_FILTER` | fetcher_infra | 収集対象ターゲットキー（カンマ区切り）。`ngrams_fetcher.TARGETS` のキーと一致させる |
+| `LLM_TARGET_FILTER` | llm_processor_infra | LLM分析対象ターゲットキー（カンマ区切り） |
+| `FETCH_INTERVAL_MINUTES` | fetcher_infra | 収集の実行間隔（分）。デフォルト5（未設定時） |
+| `LLM_INTERVAL_MINUTES` | llm_processor_infra | LLM分析の実行間隔（分）。未設定なら`LLM_INTERVAL_HOURS`（時間単位）を使用 |
+
+```bash
+docker compose up -d --build fetcher_infra llm_processor_infra
+```
+
+### 結果の確認
+
+```bash
+docker exec gdelt_postgres psql -U gdelt_user -d gdelt_db -c "
+SELECT id, target, collection_mode, title, source_domain,
+       llm_analysis->>'rating' AS rating,
+       llm_analysis->>'excluded' AS excluded,
+       llm_analysis->>'tone' AS tone,
+       llm_analysis->>'reason' AS reason
+FROM articles
+WHERE target IN ('aging_water_infrastructure','aging_water_infrastructure_ja',
+                  'seismic_building_risk','seismic_building_risk_ja')
+ORDER BY id DESC;"
+```
+
+収集件数・未処理件数の概観:
+
+```bash
+docker exec gdelt_postgres psql -U gdelt_user -d gdelt_db -c "
+SELECT target, is_llm_processed, count(*) FROM articles
+WHERE target LIKE '%infrastructure%' OR target LIKE '%seismic%'
+GROUP BY target, is_llm_processed ORDER BY target;"
+```
+
+## 高層ビル・大規模建設の進捗追跡（fetcher_construction / llm_processor_construction）
+
+`targets/construction.yaml` の2ターゲット（`large_scale_construction` 英語グローバル、`large_scale_construction_ja` 日本語）向けの専用パイプラインです。高層ビル・大規模建設プロジェクトの着工・竣工・中断・中止・再開等のニュースを収集します。衛星写真での進捗確認（地面の色の変化等）を別途行う際の補助シグナルとして、記事から建物名・所在地（都市・国・住所）も抽出します。
+
+起動・停止は `fetcher_infra`/`llm_processor_infra` と同様です。
+
+```bash
+docker compose up -d fetcher_construction llm_processor_construction
+docker compose logs -f fetcher_construction llm_processor_construction
+docker compose stop fetcher_construction llm_processor_construction
+```
+
+construction系ターゲットの記事では、`llm_analysis` に以下の `construction` フィールドが追加されます（他ターゲットには含まれません）。
+
+```json
+{
+  "construction": {
+    "status": "under_construction",
+    "building_name": "...",
+    "location": {"city": "...", "country": "...", "address": null}
+  }
+}
+```
+
+| status | 意味 |
+|---|---|
+| planned | 発表済み・未着工 |
+| groundbreaking | 起工式・着工イベント |
+| under_construction | 施工中 |
+| halted | 一時中断 |
+| cancelled | 計画中止 |
+| resumed | 中断からの再開 |
+| topped_out | 最終高さに到達（躯体工事完了） |
+| completed | 竣工・完成 |
+| unknown | 記事から判断不可 |
+
+`building_name`/`location` はLLMによる記事本文からの抽出（ベストエフォート）のため、記載がない場合は `null` になります。衛星画像との突き合わせはこのシステムの範囲外で、別途ユーザー側で実施する想定です。
 
 ## 今後の開発方針
 

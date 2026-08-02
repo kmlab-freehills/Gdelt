@@ -109,9 +109,16 @@ TARGETS: Dict[str, Dict] = _load_targets(_TARGETS_DIR)
 DOMAIN_BLACKLIST: Set[str] = {
     # プレスリリース配信
     "prnewswire.com", "businesswire.com", "globenewswire.com",
-    "accesswire.com", "einpresswire.com",
+    "accesswire.com", "einpresswire.com", "prweb.com",
     # アグリゲーター系低品質
     "markets.businessinsider.com", "247wallst.com", "insidermonkey.com",
+    # quicknews-africa.net: 2026-08-02の高層ビル・大規模建設ターゲット検証で、
+    # 2021年発生のイコイ(ラゴス)ビル倒壊記事がGDELT観測日(seendate)のみ最新化
+    # されて再ヒットしたため追加。過去記事を再クロール配信する低品質サイト。
+    "quicknews-africa.net",
+    # msn.com/yahoo系: 他媒体記事のミラー配信のみで一次報道を行わないため、
+    # 同様に古い記事がseendateだけ更新されて再ヒットしうる。
+    "msn.com", "news.yahoo.com", "finance.yahoo.com",
 }
 
 SCRAPE_TEXT_LIMIT = 1000

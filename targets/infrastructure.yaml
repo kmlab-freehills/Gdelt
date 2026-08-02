@@ -32,7 +32,7 @@
       - must: ["water main", ["aging", "deteriorating", "outdated", "corroding"]]
       - must: ["water utility", ["underfunded", "budget shortfall", "funding gap", "underinvestment"]]
       - must: ["lead pipes", ["replacement", "funding", "delay", "backlog"]]
-      - must: ["water infrastructure", ["investment", "funding", "budget"]]
+      - must: ["water infrastructure", ["underinvestment", "funding gap", "budget shortfall", "deferred maintenance"]]
 
 "seismic_building_risk":
   label: "非耐震建築物 (Seismic Building Risk)"
@@ -48,3 +48,37 @@
       - must: [["seismic", "earthquake"], "building", ["retrofit", "compliance", "upgrade"]]
       - must: ["earthquake risk", "building", ["funding", "budget", "retrofit"]]
       - must: ["seismic", ["retrofit", "safety"], ["funding", "budget", "shortfall"]]
+
+# 日本語ネイティブキーワード版（2026-07-14 再テスト用に再追加）。
+# lang: "ja" の記事のみが対象。CJKは4文字窓一致のため、4文字を超えるフレーズは
+# 記事中に完全に連続して出現しないとヒットしない点に注意。
+
+"aging_water_infrastructure_ja":
+  label: "水道管老朽化 (Aging Water Infrastructure, JA)"
+  lang: "ja"
+  monitor:
+    # 母数不足（実測77件/時）対策として単独キーワードのみのクエリを追加し網を広げる。
+    # ノイズ増はGLOBAL_EXCLUDE・LLM側のexcluded判定で吸収する想定。
+    queries:
+      - must: ["水道管", ["破裂", "漏水", "老朽化"]]
+      - must: ["水道", ["管路", "老朽化"]]
+      - must: ["水道管"]
+  analyze:
+    queries:
+      - must: ["水道管", ["老朽化", "劣化", "更新遅れ"]]
+      - must: ["水道", ["予算不足", "財源不足"]]
+      - must: [["水道管の老朽化", "老朽化した水道管"]]
+
+"seismic_building_risk_ja":
+  label: "非耐震建築物 (Seismic Building Risk, JA)"
+  lang: "ja"
+  monitor:
+    queries:
+      - must: ["耐震化", ["遅延", "未実施", "予算不足"]]
+      - must: ["旧耐震基準", ["建物", "建築物"]]
+      - must: ["耐震化"]
+  analyze:
+    queries:
+      - must: ["耐震化", ["予算不足", "財源不足", "遅延"]]
+      - must: ["耐震補強", ["費用", "予算", "遅れ"]]
+      - must: [["耐震化率", "耐震診断"]]

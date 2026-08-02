@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 
 from database import Article, FetchState, SessionLocal, init_db
 from ngrams_fetcher import (
+    TARGETS,
     download_ngrams_pair,
     enrich_articles_with_text,
     match_articles,
@@ -37,22 +38,50 @@ PUBLISH_DELAY_MINUTES = 5  # 公式推奨: 5分前のタイムスタンプまで
 BACKFILL_MINUTES = int(os.getenv("NGRAMS_BACKFILL_MINUTES", "60"))
 MAX_RETRIES = 2
 RETRY_WAIT_SECONDS = 5
+FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", "5"))
 
 
-def _get_cursor(session) -> datetime | None:
-    row = session.get(FetchState, CURSOR_KEY)
+def _get_target_filter() -> dict | None:
+    """TARGET_FILTER環境変数（カンマ区切りターゲットキー）が設定されていれば
+    ngrams_fetcher.TARGETSを絞り込んだdictを返す。未設定ならNone（全ターゲット対象）。
+    """
+    raw = os.getenv("TARGET_FILTER", "").strip()
+    if not raw:
+        return None
+    keys = {k.strip() for k in raw.split(",") if k.strip()}
+    filtered = {k: v for k, v in TARGETS.items() if k in keys}
+    missing = keys - filtered.keys()
+    if missing:
+        logger.warning(f"TARGET_FILTERに存在しないターゲットキー: {missing}")
+    return filtered
+
+
+def _get_cursor_key(target_filter: dict | None) -> str:
+    """TARGET_FILTERの内容ごとに独立したカーソルキーを返す。
+    フィルタなし収集（全ターゲット）のカーソルとは別管理にすることで、
+    複数のfetcherプロセスを異なるターゲット集合で並行運用しても
+    互いのカーソル進行に影響しない。
+    """
+    if target_filter is None:
+        return CURSOR_KEY
+    suffix = ",".join(sorted(target_filter.keys()))
+    return f"{CURSOR_KEY}:{suffix}"
+
+
+def _get_cursor(session, cursor_key: str) -> datetime | None:
+    row = session.get(FetchState, cursor_key)
     if not row:
         return None
     return datetime.strptime(row.value, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
 
 
-def _set_cursor(session, ts: datetime) -> None:
+def _set_cursor(session, cursor_key: str, ts: datetime) -> None:
     value = ts.strftime("%Y%m%d%H%M%S")
-    row = session.get(FetchState, CURSOR_KEY)
+    row = session.get(FetchState, cursor_key)
     if row:
         row.value = value
     else:
-        row = FetchState(key=CURSOR_KEY, value=value)
+        row = FetchState(key=cursor_key, value=value)
         session.add(row)
     session.commit()
 
@@ -127,7 +156,7 @@ def _save_articles(articles: list[dict]) -> tuple[int, int]:
     return inserted, skipped
 
 
-def _process_timestamp(ts: datetime) -> bool:
+def _process_timestamp(ts: datetime, targets: dict | None = None) -> bool:
     """1タイムスタンプを処理する。成功したら True、ネットワークエラーで断念したら False。"""
     ts_str = ts.strftime("%Y%m%d%H%M%S")
 
@@ -146,7 +175,7 @@ def _process_timestamp(ts: datetime) -> bool:
         logger.info(f"[{ts_str}] ファイルなし（404/空）、スキップ")
         return True
 
-    articles = match_articles(ngrams_lines, toc)
+    articles = match_articles(ngrams_lines, toc, targets=targets)
     if not articles:
         logger.info(f"[{ts_str}] 一致記事なし (ngrams行数={len(ngrams_lines)}, toc件数={len(toc)})")
         return True
@@ -159,44 +188,51 @@ def _process_timestamp(ts: datetime) -> bool:
 
 
 def catch_up() -> None:
-    """カーソルから現在時刻-5分まで1分刻みで追いつく。"""
-    session = SessionLocal()
-    try:
-        cursor = _get_cursor(session)
-    finally:
-        session.close()
+    """カーソルから現在時刻-5分まで1分刻みで追いつく。
 
+    TARGET_FILTER環境変数が設定されている場合は指定ターゲットのみに絞り込む。
+    カーソルはTARGET_FILTERの内容ごとに独立管理されるため、フィルタなし収集
+    （全ターゲット）のカーソル進行には影響しない。
+    """
+    target_filter = _get_target_filter()
+    cursor_key = _get_cursor_key(target_filter)
     now = datetime.now(timezone.utc)
     limit = (now - timedelta(minutes=PUBLISH_DELAY_MINUTES)).replace(second=0, microsecond=0)
 
+    session = SessionLocal()
+    try:
+        cursor = _get_cursor(session, cursor_key)
+    finally:
+        session.close()
+
     if cursor is None:
         start = limit - timedelta(minutes=BACKFILL_MINUTES)
-        logger.info(f"カーソル未設定。{BACKFILL_MINUTES}分前から開始: {start.isoformat()}")
+        logger.info(f"[{cursor_key}] カーソル未設定。{BACKFILL_MINUTES}分前から開始: {start.isoformat()}")
     else:
         start = cursor + timedelta(minutes=1)
 
     if start > limit:
-        logger.info("追いつくべき新規タイムスタンプなし")
+        logger.info(f"[{cursor_key}] 追いつくべき新規タイムスタンプなし")
         return
 
     ts = start
     processed_count = 0
     while ts <= limit:
-        ok = _process_timestamp(ts)
+        ok = _process_timestamp(ts, targets=target_filter)
         if not ok:
-            logger.warning(f"[{ts.strftime('%Y%m%d%H%M%S')}] で断念。次回catch_upで再開する")
+            logger.warning(f"[{cursor_key}][{ts.strftime('%Y%m%d%H%M%S')}] で断念。次回catch_upで再開する")
             break
 
         session = SessionLocal()
         try:
-            _set_cursor(session, ts)
+            _set_cursor(session, cursor_key, ts)
         finally:
             session.close()
 
         processed_count += 1
         ts += timedelta(minutes=1)
 
-    logger.info(f"catch_up完了: {processed_count} 分間分を処理")
+    logger.info(f"[{cursor_key}] catch_up完了: {processed_count} 分間分を処理")
 
 
 def main() -> None:
@@ -207,13 +243,13 @@ def main() -> None:
     scheduler.add_job(
         catch_up,
         "interval",
-        minutes=5,
+        minutes=FETCH_INTERVAL_MINUTES,
         id="ngrams_catch_up",
         next_run_time=datetime.now(timezone.utc),
         misfire_grace_time=600,
         max_instances=1,
     )
-    logger.info("タスク登録: [ngrams catch_up] (5分ごと)")
+    logger.info(f"タスク登録: [ngrams catch_up] ({FETCH_INTERVAL_MINUTES}分ごと)")
 
     try:
         logger.info("スケジューラ開始")

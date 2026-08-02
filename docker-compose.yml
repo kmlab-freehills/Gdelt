@@ -36,6 +36,64 @@ services:
       db:
         condition: service_healthy
 
+  # インフラターゲット（英語+日本語）専用の常時収集パイプライン。
+  # TARGET_FILTER/LLM_TARGET_FILTERで絞り込み、fetcher/llm_processorとは
+  # 独立したカーソルで動作するため、commodities収集には影響しない。
+  fetcher_infra:
+    build: .
+    container_name: gdelt_fetcher_infra
+    restart: no
+    env_file: .env
+    environment:
+      TARGET_FILTER: "aging_water_infrastructure,aging_water_infrastructure_ja,seismic_building_risk,seismic_building_risk_ja"
+      FETCH_INTERVAL_MINUTES: "15"
+    command: python fetcher.py
+    depends_on:
+      db:
+        condition: service_healthy
+
+  llm_processor_infra:
+    build: .
+    container_name: gdelt_llm_processor_infra
+    restart: no
+    env_file: .env
+    environment:
+      LLM_TARGET_FILTER: "aging_water_infrastructure,aging_water_infrastructure_ja,seismic_building_risk,seismic_building_risk_ja"
+      LLM_INTERVAL_MINUTES: "15"
+    command: python llm_processor.py
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # 高層ビル・大規模建設ターゲット（英語+日本語）専用の常時収集パイプライン。
+  # fetcher_infra/llm_processor_infraと同様、独立したカーソルで動作するため
+  # commodities/infra収集には影響しない。
+  fetcher_construction:
+    build: .
+    container_name: gdelt_fetcher_construction
+    restart: no
+    env_file: .env
+    environment:
+      TARGET_FILTER: "large_scale_construction,large_scale_construction_ja"
+      FETCH_INTERVAL_MINUTES: "15"
+    command: python fetcher.py
+    depends_on:
+      db:
+        condition: service_healthy
+
+  llm_processor_construction:
+    build: .
+    container_name: gdelt_llm_processor_construction
+    restart: no
+    env_file: .env
+    environment:
+      LLM_TARGET_FILTER: "large_scale_construction,large_scale_construction_ja"
+      LLM_INTERVAL_MINUTES: "15"
+    command: python llm_processor.py
+    depends_on:
+      db:
+        condition: service_healthy
+
   api:
     build: .
     container_name: gdelt_api

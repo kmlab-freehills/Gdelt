@@ -1,0 +1,46 @@
+# targets/construction.yaml
+# 高層ビル・大規模建設プロジェクトの動向追跡用ターゲット。
+#
+# 衛星写真での進捗確認（地面の色の変化等、ユーザー側で別途実施）の
+# 補助シグナルとして、着工・竣工・中断・中止・再開などのニュースをGDELTから収集する。
+# クエリ記法はinfrastructure.yamlと同様（must/exclude、CJKは4文字窓一致）。
+#
+# monitor: 幅広いクエリで速報性重視の証拠収集
+# analyze: 着工/中断/中止/再開/竣工など進捗ステータス変化に絞り込んだクエリ
+
+"large_scale_construction":
+  label: "高層ビル・大規模建設 (Large-Scale Construction)"
+  lang: "en"
+  monitor:
+    queries:
+      - must: ["skyscraper", ["construction", "built", "groundbreaking"]]
+      - must: [["high-rise", "high rise"], ["construction", "project", "tower"]]
+      - must: ["breaks ground", ["tower", "skyscraper", "high-rise"]]
+      - must: ["megaproject"]
+      - must: ["construction begins", ["tower", "skyscraper", "complex"]]
+  analyze:
+    queries:
+      - must: [["construction halted", "construction suspended", "construction stopped"], ["tower", "skyscraper", "high-rise", "building"]]
+      - must: [["project cancelled", "project canceled", "project scrapped"], ["tower", "skyscraper", "high-rise"]]
+      - must: [["construction resumes", "construction restarted"], ["tower", "skyscraper", "high-rise"]]
+      - must: [["breaks ground", "groundbreaking ceremony"], ["skyscraper", "tower", "high-rise"]]
+      - must: [["topped out", "topping out"], ["skyscraper", "tower"]]
+      - must: [["funding shortfall", "budget overrun", "delayed"], ["skyscraper", "tower", "high-rise", "megaproject"]]
+
+"large_scale_construction_ja":
+  label: "高層ビル・大規模建設 (Large-Scale Construction, JA)"
+  lang: "ja"
+  monitor:
+    queries:
+      - must: ["高層ビル", ["着工", "建設", "竣工"]]
+      - must: ["超高層ビル"]
+      - must: ["再開発", ["着工", "起工式"]]
+      - must: [["タワーマンション", "複合施設"], ["着工", "建設"]]
+  analyze:
+    queries:
+      - must: ["高層ビル", ["着工", "竣工", "中止", "中断", "延期"]]
+      - must: [["建設中止", "工事中止", "計画中止"], ["高層ビル", "再開発", "タワー"]]
+      - must: [["建設中断", "工事中断"], ["高層ビル", "再開発"]]
+      - must: [["工事再開", "建設再開"]]
+      - must: ["起工式"]
+      - must: [["竣工", "完工"], ["高層ビル", "超高層"]]

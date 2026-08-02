@@ -30,9 +30,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+CONSTRUCTION_TARGETS = {"large_scale_construction", "large_scale_construction_ja"}
+
 LLM_INTERVAL_HOURS = int(os.getenv("LLM_INTERVAL_HOURS", "6"))
+LLM_INTERVAL_MINUTES = int(os.getenv("LLM_INTERVAL_MINUTES", "0"))  # 設定時はLLM_INTERVAL_HOURSより優先
 LLM_BATCH_LIMIT = int(os.getenv("LLM_BATCH_LIMIT", "20"))
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+
+def _get_target_filter() -> set[str] | None:
+    """LLM_TARGET_FILTER環境変数（カンマ区切りターゲットキー）が設定されていれば
+    その集合を返す。未設定ならNone（全ターゲット対象）。
+    """
+    raw = os.getenv("LLM_TARGET_FILTER", "").strip()
+    if not raw:
+        return None
+    return {k.strip() for k in raw.split(",") if k.strip()}
 
 
 # ============================================================
@@ -98,8 +111,24 @@ def _parse_json(raw: str) -> dict | None:
 # ============================================================
 # プロンプト生成（記事1件単位）
 # ============================================================
-def _build_prompt(target_label: str, title: str, domain: str, publish_date: str, body: str) -> str:
+def _build_prompt(target_label: str, title: str, domain: str, publish_date: str, body: str, is_construction: bool = False) -> str:
     body_text = body.strip() if body else "(本文取得不可 - タイトルのみで判断)"
+
+    construction_fields = ""
+    construction_guide = ""
+    if is_construction:
+        construction_fields = """,
+  "construction_status": <"planned", "groundbreaking", "under_construction", "halted", "cancelled", "resumed", "topped_out", "completed", or "unknown">,
+  "building_name": "<name of the building/tower/project, or null>",
+  "location": {
+    "city": "<city, or null>",
+    "country": "<country, or null>",
+    "address": "<street address if mentioned, or null>"
+  }"""
+        construction_guide = """
+construction_status: the current status of the construction project as described in the article (planned=announced but not started, groundbreaking=ceremony/start event, under_construction=actively building, halted=temporarily stopped, cancelled=project scrapped, resumed=restarted after a halt, topped_out=structure reached final height, completed=finished/opened, unknown=status unclear)
+building_name/location: best-effort extraction to help cross-reference the project against satellite imagery later; null when not stated in the article
+"""
 
     return f"""You are analyzing a news article as a demand signal for {target_label}.
 
@@ -124,7 +153,7 @@ Return ONLY valid JSON with this exact structure:
     "effect": "<the demand impact, or null>",
     "timeframe": "<immediate/short/medium/long, or null>"
   }},
-  "drivers": ["<demand driver 1>", "<demand driver 2>"]
+  "drivers": ["<demand driver 1>", "<demand driver 2>"]{construction_fields}
 }}
 
 Rating guide:
@@ -137,22 +166,19 @@ tone: bullish=demand increase signal, bearish=demand decrease signal, neutral=mi
 tone_score: overall article sentiment aligned with GDELT V2Tone scale (-100=very negative, 0=neutral, +100=very positive), independent of demand direction
 event_date: the date the described event actually occurred (not the article publication date)
 causal fields: null is acceptable when the article does not contain enough information
-"""
+{construction_guide}"""
 
 
 # ============================================================
 # バッチ処理（全ターゲットの未処理記事を一括処理）
 # ============================================================
-def run_all(backend) -> None:
+def run_all(backend, target_keys: set[str] | None = None) -> None:
     session = SessionLocal()
     try:
-        rows = (
-            session.query(Article)
-            .filter(Article.is_llm_processed == False)
-            .order_by(Article.publish_date.desc())
-            .limit(LLM_BATCH_LIMIT)
-            .all()
-        )
+        query = session.query(Article).filter(Article.is_llm_processed == False)
+        if target_keys:
+            query = query.filter(Article.target.in_(target_keys))
+        rows = query.order_by(Article.publish_date.desc()).limit(LLM_BATCH_LIMIT).all()
     finally:
         session.close()
 
@@ -174,7 +200,8 @@ def run_all(backend) -> None:
         domain = row.source_domain or row.raw_data.get("domain", "")
         publish_date = row.publish_date.strftime("%Y-%m-%d") if row.publish_date else ""
 
-        prompt = _build_prompt(target_label, title, domain, publish_date, row.body or "")
+        is_construction = row.target in CONSTRUCTION_TARGETS
+        prompt = _build_prompt(target_label, title, domain, publish_date, row.body or "", is_construction)
 
         try:
             raw_response = backend.call(prompt)
@@ -209,6 +236,12 @@ def run_all(backend) -> None:
             "causal":       result.get("causal"),
             "drivers":      result.get("drivers", []),
         }
+        if is_construction:
+            row.llm_analysis["construction"] = {
+                "status":        result.get("construction_status"),
+                "building_name": result.get("building_name"),
+                "location":      result.get("location"),
+            }
         row.is_llm_processed = True
 
         session = SessionLocal()
@@ -216,10 +249,11 @@ def run_all(backend) -> None:
             session.add(row)
             session.commit()
             processed += 1
+            extra_log = f" construction_status={result.get('construction_status')}" if is_construction else ""
             logger.info(
                 f"[{row.target}/{row.collection_mode}] id={row.id} "
                 f"rating={result.get('rating')} tone={result.get('tone')} "
-                f"event_date={event_date_str}"
+                f"event_date={event_date_str}{extra_log}"
             )
         except Exception as e:
             session.rollback()
@@ -245,16 +279,21 @@ def main() -> None:
         logger.error("LLMバックエンドが利用できません。終了します。")
         return
 
+    interval_kwargs = (
+        {"minutes": LLM_INTERVAL_MINUTES} if LLM_INTERVAL_MINUTES > 0 else {"hours": LLM_INTERVAL_HOURS}
+    )
+
     scheduler = BlockingScheduler()
     scheduler.add_job(
         run_all,
         "interval",
-        hours=LLM_INTERVAL_HOURS,
-        args=[backend],
+        args=[backend, _get_target_filter()],
         id="llm_process_all",
         misfire_grace_time=600,
+        **interval_kwargs,
     )
-    logger.info(f"LLM処理スケジュール登録 ({LLM_INTERVAL_HOURS}時間ごと)")
+    interval_desc = f"{LLM_INTERVAL_MINUTES}分ごと" if LLM_INTERVAL_MINUTES > 0 else f"{LLM_INTERVAL_HOURS}時間ごと"
+    logger.info(f"LLM処理スケジュール登録 ({interval_desc})")
 
     try:
         logger.info("スケジューラ開始")
