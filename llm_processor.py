@@ -130,6 +130,19 @@ construction_status: the current status of the construction project as described
 building_name/location: best-effort extraction to help cross-reference the project against satellite imagery later; null when not stated in the article
 """
 
+    if is_construction:
+        rating_guide = f"""- 3: Irreversible/major status transition is explicitly stated (groundbreaking, topped_out, completed, halted, cancelled, resumed)
+- 2: Concrete progress update tied to the project (new construction milestone, contract, schedule change) but not a status transition itself
+- 1: Restates already-known status or general industry commentary with no new project-specific fact
+- null + excluded=true: Irrelevant, duplicate, or unrelated to {target_label}"""
+        why_notable_field = "<what status transition or concrete progress makes this notable, in Japanese, or null if rating < 2>"
+    else:
+        rating_guide = f"""- 3: Deviation from consensus (unexpected demand surge, forecast beat, new policy, supply shock)
+- 2: Secondary demand effect (supply chain bottleneck, substitute shift, infrastructure strain)
+- 1: Known trend reconfirmation (no new specific fact or figure)
+- null + excluded=true: Irrelevant, duplicate, market summary, or unrelated to {target_label} demand"""
+        why_notable_field = "<why this breaks consensus, in Japanese, or null if rating < 2>"
+
     return f"""You are analyzing a news article as a demand signal for {target_label}.
 
 Article:
@@ -151,7 +164,7 @@ Return ONLY valid JSON with this exact structure:
     "self_group_density": <decimal 0.0-100.0, % of words that are self/group-referential (I, we, us, our, the company, etc.)>
   }},
   "reason": "<1-2 sentence evaluation in Japanese>",
-  "why_notable": "<why this breaks consensus, in Japanese, or null if rating < 2>",
+  "why_notable": "{why_notable_field}",
   "event_date": "<YYYY-MM-DD of the actual event described, or null if unclear>",
   "causal": {{
     "trigger": "<what caused this demand change, or null>",
@@ -163,10 +176,7 @@ Return ONLY valid JSON with this exact structure:
 }}
 
 Rating guide:
-- 3: Deviation from consensus (unexpected demand surge, forecast beat, new policy, supply shock)
-- 2: Secondary demand effect (supply chain bottleneck, substitute shift, infrastructure strain)
-- 1: Known trend reconfirmation (no new specific fact or figure)
-- null + excluded=true: Irrelevant, duplicate, market summary, or unrelated to {target_label} demand
+{rating_guide}
 
 tone: reproduce GDELT's V2Tone calculation (the GKG "V2.1TONE" field), not a generic sentiment
 label. GDELT computes this by scanning every word in a document against sentiment/verb/pronoun
