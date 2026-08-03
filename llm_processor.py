@@ -142,8 +142,14 @@ Return ONLY valid JSON with this exact structure:
 {{
   "rating": <1, 2, or 3, or null if excluded>,
   "excluded": <true or false>,
-  "tone": <"bullish", "bearish", or "neutral">,
-  "tone_score": <-100.0 to +100.0, overall article sentiment, positive=positive coverage, negative=negative coverage>,
+  "tone": {{
+    "score": <signed decimal, positive_score - negative_score; realistically ~-10.0 to +10.0 for most articles>,
+    "positive_score": <decimal 0.0-100.0, % of all words in the article matching a positive-sentiment lexicon>,
+    "negative_score": <decimal 0.0-100.0, % of all words matching a negative-sentiment lexicon>,
+    "polarity": <decimal 0.0-100.0, positive_score + negative_score; how emotionally charged the text is overall>,
+    "activity_density": <decimal 0.0-100.0, % of words that are active-voice/action verbs>,
+    "self_group_density": <decimal 0.0-100.0, % of words that are self/group-referential (I, we, us, our, the company, etc.)>
+  }},
   "reason": "<1-2 sentence evaluation in Japanese>",
   "why_notable": "<why this breaks consensus, in Japanese, or null if rating < 2>",
   "event_date": "<YYYY-MM-DD of the actual event described, or null if unclear>",
@@ -162,8 +168,24 @@ Rating guide:
 - 1: Known trend reconfirmation (no new specific fact or figure)
 - null + excluded=true: Irrelevant, duplicate, market summary, or unrelated to {target_label} demand
 
-tone: bullish=demand increase signal, bearish=demand decrease signal, neutral=mixed/unclear
-tone_score: overall article sentiment aligned with GDELT V2Tone scale (-100=very negative, 0=neutral, +100=very positive), independent of demand direction
+tone: reproduce GDELT's V2Tone calculation (the GKG "V2.1TONE" field), not a generic sentiment
+label. GDELT computes this by scanning every word in a document against sentiment/verb/pronoun
+lexicons and taking each match count as a percentage of TOTAL word count (not just the
+emotionally-charged words). Estimate each sub-field the way that lexicon scanner would:
+- positive_score / negative_score: density of positive/negative sentiment words across the whole
+  article. Because most words in any article are neutral (names, numbers, factual terms), these
+  are usually small (low single digits to ~10), rarely double digits, essentially never near 100.
+- score = positive_score - negative_score. Do NOT default to round or extreme numbers (-100, -50,
+  0, +50, +100) as a stand-in for "very negative/neutral/very positive" — in real GDELT data the
+  overwhelming majority of articles fall in roughly -10 to +10; scores beyond +/-15 are reserved
+  for text saturated with emotionally loaded language throughout (opinion pieces, disaster
+  coverage, PR fluff).
+- polarity = positive_score + negative_score, independent of direction.
+- activity_density: how much of the text is active/action-oriented language vs. passive/static
+  description.
+- self_group_density: how much of the text speaks in first-person or as a collective entity (a
+  company statement, an official quote using "we") vs. detached third-person reporting — most hard
+  news reporting scores low here.
 event_date: the date the described event actually occurred (not the article publication date)
 causal fields: null is acceptable when the article does not contain enough information
 {construction_guide}"""
@@ -230,7 +252,6 @@ def run_all(backend, target_keys: set[str] | None = None) -> None:
             "rating":       result.get("rating"),
             "excluded":     result.get("excluded", False),
             "tone":         result.get("tone"),
-            "tone_score":   result.get("tone_score"),
             "reason":       result.get("reason"),
             "why_notable":  result.get("why_notable"),
             "causal":       result.get("causal"),
@@ -250,9 +271,10 @@ def run_all(backend, target_keys: set[str] | None = None) -> None:
             session.commit()
             processed += 1
             extra_log = f" construction_status={result.get('construction_status')}" if is_construction else ""
+            tone_score = (result.get("tone") or {}).get("score")
             logger.info(
                 f"[{row.target}/{row.collection_mode}] id={row.id} "
-                f"rating={result.get('rating')} tone={result.get('tone')} "
+                f"rating={result.get('rating')} tone_score={tone_score} "
                 f"event_date={event_date_str}{extra_log}"
             )
         except Exception as e:
