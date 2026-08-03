@@ -154,8 +154,14 @@ APIサーバー起動後、Swagger UIでエンドポイントを確認できま�
 {
   "rating": 3,
   "excluded": false,
-  "tone": "bullish",
-  "tone_score": 42.0,
+  "tone": {
+    "score": 4.2,
+    "positive_score": 5.1,
+    "negative_score": 0.9,
+    "polarity": 6.0,
+    "activity_density": 12.3,
+    "self_group_density": 1.0
+  },
   "reason": "判定理由（日本語）",
   "why_notable": "コンセンサスを超える理由（日本語）",
   "causal": {"trigger": "...", "mechanism": "...", "effect": "...", "timeframe": "short"},
@@ -211,7 +217,7 @@ docker exec gdelt_postgres psql -U gdelt_user -d gdelt_db -c "
 SELECT id, target, collection_mode, title, source_domain,
        llm_analysis->>'rating' AS rating,
        llm_analysis->>'excluded' AS excluded,
-       llm_analysis->>'tone' AS tone,
+       llm_analysis->'tone'->>'score' AS tone_score,
        llm_analysis->>'reason' AS reason
 FROM articles
 WHERE target IN ('aging_water_infrastructure','aging_water_infrastructure_ja',
