@@ -21,6 +21,12 @@ services:
     container_name: gdelt_fetcher
     restart: no
     env_file: .env
+    # コモディティ（需要シグナル）専用。建設・インフラは専用サービスで収集するため絞り込む。
+    # 初回はGDELTのファイル保持期間内（35日分）をさかのぼって取得する。
+    environment:
+      TARGET_FILTER: "copper,gold,uranium,rare earth,natural gas,silver"
+      FETCH_INTERVAL_MINUTES: "15"
+      NGRAMS_BACKFILL_MINUTES: "50400"
     command: python fetcher.py
     depends_on:
       db:
@@ -31,7 +37,12 @@ services:
     container_name: gdelt_llm_processor
     restart: no
     env_file: .env
+    environment:
+      LLM_TARGET_FILTER: "copper,gold,uranium,rare earth,natural gas,silver"
+      LLM_INTERVAL_MINUTES: "15"
     command: python llm_processor.py
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
@@ -61,6 +72,8 @@ services:
       LLM_TARGET_FILTER: "aging_water_infrastructure,aging_water_infrastructure_ja,seismic_building_risk,seismic_building_risk_ja"
       LLM_INTERVAL_MINUTES: "15"
     command: python llm_processor.py
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
@@ -90,6 +103,8 @@ services:
       LLM_TARGET_FILTER: "large_scale_construction,large_scale_construction_ja"
       LLM_INTERVAL_MINUTES: "15"
     command: python llm_processor.py
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy

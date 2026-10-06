@@ -4,3 +4,5 @@ gcp-key.json
 !.env.example
 __pycache__/
 *.pyc
+# 評価用の出力（記事本文・ラベルを含むためgit管理しない）
+eval_results/

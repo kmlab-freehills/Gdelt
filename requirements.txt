@@ -1,6 +1,6 @@
 fastapi>=0.100.0
 uvicorn>=0.22.0
-sqlalchemy>=2.0.0
+sqlalchemy>=2.0.0,<2.1  # 2.1でpostgresql://の既定ドライバがpsycopg(v3)に変わったため2.0系に固定
 psycopg2-binary>=2.9.0
 requests>=2.31.0
 apscheduler>=3.10.0

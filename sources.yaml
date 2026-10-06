@@ -1,0 +1,254 @@
+# sources.yaml
+# 媒体の区分（tier）と配信系列（network）の対応表。ソース信頼度の評価に使う。
+#
+# - ドメインは登録ドメイン単位（650keni.iheart.com → iheart.com）で書く。
+# - tier は「その媒体が一般にどういう性格か」の区分で、記事1本ごとの取材性は
+#   LLMによる判定（classify_sources.py の source_assessment）で別に見る。
+# - network は、同じ記事を複数のドメインに配信している系列。系列内の複数ドメインで
+#   報じられても「独立した裏取り」とはみなさないために使う。
+# - ここに無いドメインは unclassified として扱う。
+#
+# 初版（2026-10-06）: 建設ターゲットの採用記事の上位ドメインを中心に作成。要確認・随時追記。
+
+tiers:
+  # 通信社: 一次取材を行い、他媒体に記事を配信する
+  wire:
+    - reuters.com
+    - apnews.com
+    - bloomberg.com
+    - afp.com
+    - upi.com
+    - aninews.in
+    - ptinews.com
+    - ians.in
+    - kyodonews.net
+    - jiji.com
+    - xinhuanet.com
+    - news.cn
+
+  # 業界専門媒体: 建設・不動産・建築の専門報道
+  trade:
+    - commercialobserver.com
+    - therealdeal.com
+    - constructiondive.com
+    - enr.com
+    - bisnow.com
+    - globest.com
+    - bdcnetwork.com
+    - constructionnews.co.uk
+    - building.co.uk
+    - theconstructionindex.co.uk
+    - globalconstructionreview.com
+    - constructionweekonline.com
+    - architectsjournal.co.uk
+    - architecturalrecord.com
+    - archdaily.com
+    - dezeen.com
+    - archinect.com
+    - designboom.com
+    - wallpaper.com
+    - multifamilybiz.com
+    - multihousingnews.com
+    - newyorkyimby.com
+    - bankerandtradesman.com
+    - marinelink.com
+    - eco-business.com
+    - kensetsunews.com
+    - decn.co.jp
+
+  # 全国紙・主要媒体（国・地域を代表する報道機関、経済紙を含む）
+  national:
+    - nytimes.com
+    - wsj.com
+    - washingtonpost.com
+    - usatoday.com
+    - latimes.com
+    - cnn.com
+    - cnbc.com
+    - foxnews.com
+    - nbcnews.com
+    - cbsnews.com
+    - newsweek.com
+    - nypost.com
+    - csmonitor.com
+    - cnet.com
+    - theguardian.com
+    - bbc.co.uk
+    - bbc.com
+    - ft.com
+    - economist.com
+    - dailymail.co.uk
+    - dailymail.com
+    - express.co.uk
+    - metro.co.uk
+    - cityam.com
+    - euronews.com
+    - elpais.com
+    - theglobeandmail.com
+    - cbc.ca
+    - globalnews.ca
+    - smh.com.au
+    - theage.com.au
+    - abc.net.au
+    - theaustralian.com.au
+    - indiatimes.com
+    - thehindu.com
+    - hindustantimes.com
+    - business-standard.com
+    - livemint.com
+    - moneycontrol.com
+    - tribuneindia.com
+    - deccanchronicle.com
+    - freepressjournal.in
+    - newsx.com
+    - scmp.com
+    - chinadaily.com.cn
+    - globaltimes.cn
+    - bjreview.com
+    - bjreview.com.cn
+    - straitstimes.com
+    - businesstimes.com.sg
+    - asiaone.com
+    - koreaherald.com
+    - koreatimes.co.kr
+    - manilatimes.net
+    - thenationalnews.com
+    - gulfnews.com
+    - khaleejtimes.com
+    - arabnews.com
+    - zawya.com
+    - tradearabia.com
+    - gdnonline.com
+    - dawn.com
+    - kyivpost.com
+    - dailymaverick.co.za
+    - cyprus-mail.com
+    - nikkei.com
+    - asahi.com
+    - yomiuri.co.jp
+    - mainichi.jp
+    - sankei.com
+    - nhk.or.jp
+    - japantimes.co.jp
+
+  # まとめ・転載サイト（一次取材を行わず、他媒体の記事を再掲載する）
+  aggregator:
+    - yahoo.com
+    - aol.com
+    - aol.co.uk
+    - msn.com
+    - allafrica.com
+    - newsnow.co.uk
+    - newsbreak.com
+    - menafn.com
+    - devdiscourse.com
+    - webindia123.com
+    - prokerala.com
+    - equitybulls.com
+    - finanznachrichten.de
+    - asianews.network
+
+  # プレスリリース配信（ngrams_fetcher.py のブラックリストで既に除外しているものを含む）
+  pr:
+    - prnewswire.com
+    - businesswire.com
+    - globenewswire.com
+    - accesswire.com
+    - einpresswire.com
+    - prweb.com
+    - openpr.com
+    - newswire.com
+    - prlog.org
+
+  # ブログ・掲示板・コミュニティ
+  blog:
+    - medium.com
+    - substack.com
+    - wordpress.com
+    - blogspot.com
+    - freerepublic.com
+    - qatarliving.com
+    - reddit.com
+
+networks:
+  # iHeartRadio系列のラジオ局サイト（1記事が数十局に転載される）
+  iheartmedia:
+    - iheart.com
+  # 豪ACMの地方紙グループ
+  acm_australia:
+    - illawarramercury.com.au
+    - southcoastregister.com.au
+    - ulladullatimes.com.au
+    - southernhighlandnews.com.au
+    - newcastleherald.com.au
+    - canberratimes.com.au
+    - examiner.com.au
+  # 豪Nine（旧Fairfax）系
+  nine_australia:
+    - smh.com.au
+    - theage.com.au
+    - brisbanetimes.com.au
+  # Big News Network（同一記事を多数の地域名ドメインで配信）
+  big_news_network:
+    - bignewsnetwork.com
+    - bruneinews.net
+    - indiagazette.com
+    - calcuttanews.net
+    - cambodiantimes.com
+    - srilankasource.com
+    - beijingbulletin.com
+    - nepalnational.com
+    - shanghainews.net
+    - shanghaisun.com
+    - bangladeshsun.com
+    - laosnews.net
+    - heraldglobe.com
+    - asiabulletin.com
+    - chinanationalnews.com
+  # カナダPostmedia系
+  postmedia:
+    - calgaryherald.com
+    - calgarysun.com
+    - edmontonsun.com
+    - leaderpost.com
+  # 米Tribune Publishing系
+  tribune_publishing:
+    - chicagotribune.com
+    - sun-sentinel.com
+    - orlandosentinel.com
+    - courant.com
+    - capitalgazette.com
+    - mcall.com
+    - nydailynews.com
+    - baltimoresun.com
+  # 米Southern California News Group系
+  scng:
+    - ocregister.com
+    - dailybreeze.com
+    - presstelegram.com
+    - dailynews.com
+  # 英Reach plc系
+  reach_plc:
+    - birminghammail.co.uk
+    - chroniclelive.co.uk
+    - plymouthherald.co.uk
+    - express.co.uk
+    - mirror.co.uk
+  # 英Newsquest系
+  newsquest:
+    - edp24.co.uk
+    - eadt.co.uk
+    - eastlondonadvertiser.co.uk
+    - glasgowtimes.co.uk
+  # 米Graham Media（地方テレビ局）
+  graham_media:
+    - click2houston.com
+    - clickondetroit.com
+    - clickorlando.com
+    - ksat.com
+  # 米FOX Television Stations
+  fox_stations:
+    - fox13news.com
+    - fox10phoenix.com
+    - fox5atlanta.com
+    - fox5dc.com

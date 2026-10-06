@@ -21,6 +21,7 @@ ngramsファイルの仕様（実測で検証済み）:
 
 import gzip
 import json
+import os
 import re
 import threading
 import time
@@ -121,7 +122,9 @@ DOMAIN_BLACKLIST: Set[str] = {
     "msn.com", "news.yahoo.com", "finance.yahoo.com",
 }
 
-SCRAPE_TEXT_LIMIT = 1000
+# 本文の保存上限（文字数）。日付・工程などの経緯は記事後半に書かれることが多いため、
+# 冒頭だけで切らないよう余裕を持たせる（LLMのnum_ctx 8192トークンに日本語でも収まる範囲）。
+SCRAPE_TEXT_LIMIT = int(os.getenv("SCRAPE_TEXT_LIMIT", "4000"))
 SCRAPE_TIMEOUT = 10
 _SCRAPE_MAX_WORKERS = 5
 
