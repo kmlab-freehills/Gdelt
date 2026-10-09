@@ -22,11 +22,13 @@ services:
     restart: no
     env_file: .env
     # コモディティ（需要シグナル）専用。建設・インフラは専用サービスで収集するため絞り込む。
-    # 初回はGDELTのファイル保持期間内（35日分）をさかのぼって取得する。
+    # 広いクエリ(monitor)は量が多く質が低いため、狭いクエリ(analyze)のみ使う（2026-10-06の標本評価による）。
+    # 銀はクエリが機能していないため除外。初回はGDELTのファイル保持期間の上限付近（42日分）をさかのぼる。
     environment:
-      TARGET_FILTER: "copper,gold,uranium,rare earth,natural gas,silver"
+      TARGET_FILTER: "copper,gold,uranium,rare earth,natural gas"
+      QUERY_MODES: "analyze"
       FETCH_INTERVAL_MINUTES: "15"
-      NGRAMS_BACKFILL_MINUTES: "50400"
+      NGRAMS_BACKFILL_MINUTES: "60480"
     command: python fetcher.py
     depends_on:
       db:
@@ -38,7 +40,11 @@ services:
     restart: no
     env_file: .env
     environment:
-      LLM_TARGET_FILTER: "copper,gold,uranium,rare earth,natural gas,silver"
+      LLM_TARGET_FILTER: "copper,gold,uranium,rare earth,natural gas"
+      # 狭いクエリ(analyze)で集めた記事だけを処理する（9/1〜3に広いクエリで集めた記事は対象外）
+      LLM_MODE_FILTER: "analyze"
+      # 過去分（約8,000件）を早く処理するため上限を大きくする。15分を超える回は次回が自動で見送られ、二重には動かない
+      OLLAMA_BATCH_LIMIT: "1000"
       LLM_INTERVAL_MINUTES: "15"
     command: python llm_processor.py
     extra_hosts:

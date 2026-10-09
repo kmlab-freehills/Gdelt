@@ -39,6 +39,20 @@ BACKFILL_MINUTES = int(os.getenv("NGRAMS_BACKFILL_MINUTES", "60"))
 MAX_RETRIES = 2
 RETRY_WAIT_SECONDS = 5
 FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", "5"))
+# 照合に使うクエリの種類（monitor=広いクエリ / analyze=狭いクエリ）。未設定なら両方
+QUERY_MODES = {m.strip() for m in os.getenv("QUERY_MODES", "monitor,analyze").split(",") if m.strip()}
+_ALL_MODES = {"monitor", "analyze"}
+
+
+def _apply_query_modes(targets: dict | None) -> dict | None:
+    """QUERY_MODES に含まれない種類のクエリを除いたターゲット定義を返す。両方使うなら元のまま。"""
+    if QUERY_MODES >= _ALL_MODES:
+        return targets
+    base = targets if targets is not None else TARGETS
+    return {
+        key: {k: v for k, v in config.items() if k not in _ALL_MODES or k in QUERY_MODES}
+        for key, config in base.items()
+    }
 
 
 def _get_target_filter() -> dict | None:
@@ -62,10 +76,11 @@ def _get_cursor_key(target_filter: dict | None) -> str:
     複数のfetcherプロセスを異なるターゲット集合で並行運用しても
     互いのカーソル進行に影響しない。
     """
-    if target_filter is None:
-        return CURSOR_KEY
-    suffix = ",".join(sorted(target_filter.keys()))
-    return f"{CURSOR_KEY}:{suffix}"
+    key = CURSOR_KEY if target_filter is None else f"{CURSOR_KEY}:{','.join(sorted(target_filter.keys()))}"
+    # クエリの種類を絞った収集は、両方使う収集とは別のカーソルで管理する
+    if not QUERY_MODES >= _ALL_MODES:
+        key += "|modes=" + ",".join(sorted(QUERY_MODES))
+    return key
 
 
 def _get_cursor(session, cursor_key: str) -> datetime | None:
@@ -196,6 +211,7 @@ def catch_up() -> None:
     """
     target_filter = _get_target_filter()
     cursor_key = _get_cursor_key(target_filter)
+    match_targets = _apply_query_modes(target_filter)
     now = datetime.now(timezone.utc)
     limit = (now - timedelta(minutes=PUBLISH_DELAY_MINUTES)).replace(second=0, microsecond=0)
 
@@ -218,7 +234,7 @@ def catch_up() -> None:
     ts = start
     processed_count = 0
     while ts <= limit:
-        ok = _process_timestamp(ts, targets=target_filter)
+        ok = _process_timestamp(ts, targets=match_targets)
         if not ok:
             logger.warning(f"[{cursor_key}][{ts.strftime('%Y%m%d%H%M%S')}] で断念。次回catch_upで再開する")
             break

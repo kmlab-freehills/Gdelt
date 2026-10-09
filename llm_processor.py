@@ -59,6 +59,25 @@ MILESTONE_EVENTS = {
 MILESTONE_STATUSES = {"actual", "planned"}
 EVENT_DATE_BASES = {"explicit", "relative", "publication"}  # event_date の根拠（建設ターゲットのみ）
 PROJECT_TYPES = {"building", "industrial", "infrastructure", "energy", "public_facility", "other"}
+# 建設記事の主題の区分。project_progress 以外は除外する
+MAIN_SUBJECTS = {
+    "project_progress", "policy_or_program", "multiple_projects", "company_or_product",
+    "incident_at_building", "history_or_feature", "market_or_opinion", "other",
+}
+# llm_analysis に記録するプロンプトのバージョン（結果の世代を判別するため）
+PROMPT_VERSIONS = {"construction": "construction-v5", "demand": "demand-v4"}
+# 需要プロンプトで品目の範囲を明示するもの（キーはターゲット名）。他の品目と混同されやすいものだけ書く
+DEMAND_SCOPES = {
+    "rare earth": (
+        "Scope: rare earths ONLY, i.e. the 17 rare earth elements (e.g. neodymium, praseodymium, dysprosium, "
+        "terbium, lanthanum, cerium, yttrium, scandium) and products made mainly from them, such as rare earth "
+        "magnets. Other critical or battery minerals (lithium, cobalt, nickel, graphite, manganese, tungsten, "
+        "gallium, germanium, antimony, uranium) are NOT rare earths: set excluded=true unless the article also "
+        "reports a concrete fact about rare earths themselves. A passing mention of rare earth deposits or of "
+        "\"critical minerals\" in general is not enough."
+    ),
+}
+_DEMAND_SCOPE_BY_LABEL = {TARGETS[k]["label"]: v for k, v in DEMAND_SCOPES.items() if k in TARGETS}
 _DATE_PRECISION = {4: "year", 7: "month", 10: "day"}  # YYYY / YYYY-MM / YYYY-MM-DD
 
 
@@ -72,6 +91,10 @@ def _get_target_filter() -> set[str] | None:
     return {k.strip() for k in raw.split(",") if k.strip()}
 
 
+# LLM_MODE_FILTER: 処理する記事の収集モード（monitor/analyze、カンマ区切り）。未設定なら全て
+LLM_MODE_FILTER = {m.strip() for m in os.getenv("LLM_MODE_FILTER", "").split(",") if m.strip()} or None
+
+
 # ============================================================
 # LLM バックエンド
 # ============================================================
@@ -83,6 +106,7 @@ class _GeminiBackend:
         if not api_key:
             raise ValueError("GEMINI_API_KEY が .env にありません")
         self.client = genai.Client(api_key=api_key)
+        self.model_name = GEMINI_MODEL
         self.config = types.GenerateContentConfig(
             temperature=0.01,
             max_output_tokens=4096,
@@ -129,6 +153,7 @@ class _OllamaBackend:
                     raise ConnectionError(f"Ollama ({OLLAMA_HOST}) に接続できません: {e}")
                 logger.warning(f"Ollama ({OLLAMA_HOST}) 接続待ち… 10秒後に再試行")
                 time.sleep(10)
+        self.model_name = OLLAMA_MODEL
         models = [m.get("name") for m in resp.json().get("models", [])]
         if OLLAMA_MODEL not in models:
             logger.warning(f"モデル {OLLAMA_MODEL} が未取得の可能性があります（取得済み: {models}）")
@@ -193,8 +218,10 @@ def _build_prompt(target_label: str, title: str, domain: str, publish_date: str,
 
 
 def _build_demand_prompt(target_label: str, title: str, domain: str, publish_date: str, body_text: str) -> str:
+    scope = _DEMAND_SCOPE_BY_LABEL.get(target_label)
+    scope_text = f"\n{scope}\n" if scope else ""
     return f"""You are analyzing a news article as a demand signal for {target_label}.
-
+{scope_text}
 Article:
 - Title: {title}
 - Source: {domain}
@@ -203,32 +230,50 @@ Article:
 
 Return ONLY valid JSON with this exact structure:
 {{
-  "rating": <1, 2, or 3, or null if excluded>,
+  "reason": "<1-2 sentences in Japanese: which demand-relevant fact the article reports, or why it is not relevant>",
+  "causal_evidence": "<a short phrase copied verbatim from the article that states the cause of the supply-demand change, or null>",
+  "surprise_evidence": "<a short phrase copied verbatim from the article that explicitly compares a figure or development with expectations, forecasts, consensus, or records, or null>",
   "excluded": <true or false>,
-  "tone": <"bullish", "bearish", or "neutral">,
-  "tone_score": <-100.0 to +100.0, overall article sentiment, positive=positive coverage, negative=negative coverage>,
-  "reason": "<1-2 sentence evaluation in Japanese>",
-  "why_notable": "<why this breaks consensus, in Japanese, or null if rating < 2>",
-  "event_date": "<YYYY-MM-DD of the actual event described, or null if unclear>",
+  "rating": <1, 2, or 3, or null if excluded>,
   "causal": {{
-    "trigger": "<what caused this demand change, or null>",
-    "mechanism": "<how it propagates through supply/demand, or null>",
-    "effect": "<the demand impact, or null>",
+    "trigger": "<the cause of the supply-demand change as stated in the article, summarized in Japanese, or null>",
+    "mechanism": "<how it propagates through supply and demand as stated in the article, summarized in Japanese, or null>",
+    "effect": "<the resulting impact on supply-demand or price as stated in the article, summarized in Japanese, or null>",
     "timeframe": "<immediate/short/medium/long, or null>"
   }},
-  "drivers": ["<demand driver 1>", "<demand driver 2>"]
+  "price_direction": <"up", "down", or "none">,
+  "demand_direction": <"increase", "decrease", or "none">,
+  "supply_direction": <"tighter", "looser", or "none">,
+  "tone_score": <-100.0 to +100.0, overall article sentiment, positive=positive coverage, negative=negative coverage>,
+  "why_notable": "<why this is notable, in Japanese, or null if rating < 2>",
+  "event_date": "<YYYY-MM-DD of the actual event described, or null if unclear>",
+  "drivers": ["<demand driver 1, in Japanese>", "<demand driver 2, in Japanese>"],
+  "causal_inferred": {{
+    "mechanism": "<your own reasoning about how this could propagate through supply and demand, in Japanese, or null>",
+    "effect": "<your own expectation of the impact on supply-demand or price, in Japanese, or null>"
+  }}
 }}
 
-Rating guide:
-- 3: Deviation from consensus (unexpected demand surge, forecast beat, new policy, supply shock)
-- 2: Secondary demand effect (supply chain bottleneck, substitute shift, infrastructure strain)
-- 1: Known trend reconfirmation (no new specific fact or figure)
-- null + excluded=true: Irrelevant, duplicate, market summary, or unrelated to {target_label} demand
+Decide in this order: first write reason, then the two evidence fields, then excluded and rating. Decide excluded and rating ONLY from what the article states; causal_inferred comes last and must not affect them.
 
-tone: bullish=demand increase signal, bearish=demand decrease signal, neutral=mixed/unclear
+excluded: true when the article does not report a concrete fact that affects demand (or the supply-demand balance) for {target_label}. Exclude price-only market reports and technical analysis, investment advice, generic commentary, promotional content, unrelated topics, and duplicates. If the article states no cause of a supply-demand change, excluded must be true.
+
+Rating guide (null when excluded):
+- 3: The article itself explicitly states that a figure or development deviates from expectations, forecasts, consensus, or records (e.g. "above forecasts", "unexpected", "record high", "first time since 2015"), or reports a sudden supply or demand shock (export ban, plant closure, new mandate) together with its scale. surprise_evidence must quote that statement. Never infer a surprise by yourself.
+- 2: A concrete new fact with a plausible effect on demand (new order, capacity expansion, policy, consumption data) without an explicit comparison to expectations.
+- 1: Reconfirms a known trend, or commentary without a new specific fact or figure.
+Most relevant articles should be rated 1 or 2; rating 3 should be uncommon.
+
+causal_evidence / surprise_evidence: copy verbatim in the article's original language; never paraphrase or translate. Use null when the article contains no such statement.
+causal: summarize in Japanese ONLY what the article itself states about trigger, mechanism, and effect; use null for any part the article does not state. Never put your own reasoning into causal.
+causal_inferred: your own reasoning goes here, clearly separated from what the article states. Use null when you have nothing to add.
+price_direction: the price movement of {target_label} that the article states or attributes to the reported fact ("up" / "down"); "none" when the article does not say.
+demand_direction: whether the reported fact increases or decreases demand for {target_label} ("none" when it does not affect demand).
+supply_direction: whether the reported fact makes supply of {target_label} tighter (export ban, mine or plant closure, blocked shipping route, sanctions, outage) or looser (new capacity, restrictions lifted, surplus, inventory build); "none" when it does not affect supply.
 tone_score: overall article sentiment aligned with GDELT V2Tone scale (-100=very negative, 0=neutral, +100=very positive), independent of demand direction
 event_date: the date the described event actually occurred (not the article publication date). It must not be later than the publication date; scheduled future events are not event_date. Return null when the article does not state the date; never guess or use a placeholder date. Return null when excluded=true.
-causal fields: null is acceptable when the article does not contain enough information
+
+IMPORTANT: Write reason, why_notable, causal (trigger, mechanism, effect), causal_inferred, and drivers in Japanese, even when the article is in English. Keep causal_evidence and surprise_evidence exactly in the article's original language.
 """
 
 
@@ -250,7 +295,8 @@ Article:
 
 Return ONLY valid JSON with this exact structure:
 {{
-  "reason": "<1-2 sentences in Japanese: which specific project this article is about and what happened, or why there is no specific project>",
+  "reason": "<1-2 sentences in Japanese: what the article is mainly about, and which specific project (if any) and what happened to it>",
+  "main_subject": <"project_progress", "policy_or_program", "multiple_projects", "company_or_product", "incident_at_building", "history_or_feature", "market_or_opinion", or "other">,
   "project_evidence": "<a short phrase copied verbatim from the article that names or locates the specific project, or null>",
   "excluded": <true or false>,
   "rating": <1, 2, or 3, or null if excluded>,
@@ -276,9 +322,21 @@ Return ONLY valid JSON with this exact structure:
   ]
 }}
 
-Decide in this order: first write reason, then project_evidence, then excluded.
+Decide in this order: first write reason, then main_subject, then project_evidence, then excluded.
+
+main_subject: what the article is MAINLY about. Ask: "Is this article's main news the planning, construction, or completion of one specific project?"
+- project_progress: the main news is a development of one specific construction project (or two or three closely related ones): announced, approved, financed, contract awarded, groundbreaking, construction progress, delay, halt, lawsuit or opposition that blocks it, labor, safety, or legal issues at its construction site, cancellation, topping out, completion, opening.
+- policy_or_program: government policy, national or city-wide programs and targets (e.g. a national affordable-housing target), zoning or regulation in general.
+- multiple_projects: a roundup, editorial, or analysis covering several unrelated projects without focusing on one.
+- company_or_product: company earnings, strategy, services, products, or promotional content about a firm (even if it mentions where its products are used).
+- incident_at_building: a fire, accident, attack, crime, flood, or other event that happens at or to a building, not about building it.
+- history_or_feature: history, anniversaries, retrospectives, interviews or memoirs about past projects, book reviews, models or artworks, celebrity homes, lifestyle features.
+- market_or_opinion: real estate market, prices, rents, sales, or opinion/essays about cities and architecture in general.
+- other: anything else.
+A building or construction site merely being the setting of the story does NOT make it project_progress.
+
 project_evidence: copy verbatim, in the article's original language, the shortest phrase that names or locates the specific project (e.g. "a 40-storey tower in Al Khobar", "Jeddah Tower"). Use null when the article has no specific project.
-excluded: false ONLY when the article reports on at least one specific, identifiable large-scale construction project (a named project, or a clearly identified site such as "a 40-storey tower in Al Khobar"). If project_evidence is null, excluded must be true. If your reason says there is no specific project, excluded must be true. Set true also for: general market or economic commentary, policy/regulation/zoning news without a specific project, real-estate prices or sales, opinion pieces without a specific project, articles that mention construction only in passing, small works (a single house, minor repairs or renovations), and unrelated topics. When the article covers several projects, describe the main one.
+excluded: false ONLY when main_subject is "project_progress" AND the project is a specific, identifiable large-scale construction project (a named project, or a clearly identified site such as "a 40-storey tower in Al Khobar"). In every other case excluded must be true. If project_evidence is null, excluded must be true. Also exclude small works (a single house, minor repairs or renovations). When the article covers two or three related projects, describe the main one.
 
 rating (null when excluded):
 - 3: A status change of the project: newly announced, approved, groundbreaking, halted, cancelled, resumed, topped out, completed/opened
@@ -288,24 +346,31 @@ rating (null when excluded):
 tone: bullish=the project is advancing (new, started, progressing, completed), bearish=setback (halted, cancelled, delayed, funding problems), neutral=mixed/unclear
 tone_score: overall article sentiment aligned with GDELT V2Tone scale (-100=very negative, 0=neutral, +100=very positive)
 
-event_date: the date on which the main reported development happened. It must not be later than the publication date; scheduled future events go to milestones, not event_date.
+event_date: the date on which the main reported development happened. First look for an explicit date or weekday of that development in the article (e.g. "on March 3", "on Tuesday"); use the publication date only when the article gives no timing at all. It must not be later than the publication date; scheduled future events go to milestones, not event_date.
 event_date_basis:
 - "explicit": the article states the date
-- "relative": computed from relative wording such as "on Tuesday" or "last week", using the publication date and weekday above
+- "relative": computed from relative wording such as "on Tuesday" or "last week", using the publication date and weekday above. A weekday means the most recent such day before the publication date: if published on Wednesday 2026-03-04, "on Monday" is 2026-03-02 and "on Wednesday" is 2026-03-04.
 - "publication": the article reports it as current news without any date, so the publication date is used
 Set event_date and event_date_basis to null when excluded=true, or when the timing cannot be determined (e.g. a background feature about an older event). Never guess or use a placeholder date.
 
-construction_status: the current status of the main project (planned=announced but not started, groundbreaking=ceremony/start event, under_construction=actively building, halted=temporarily stopped, cancelled=project scrapped, resumed=restarted after a halt, topped_out=structure reached final height, completed=finished/opened, unknown=unclear)
+construction_status: the status of the main project as of the publication date. Decide it from what the article says about physical work on the site.
+- under_construction: the article describes the project as being built, rising, under construction, or with work underway, or the groundbreaking took place earlier (weeks, months, or years before). A project whose first phases have opened but whose main part is still being built is also under_construction.
+- planned: ONLY when the article indicates that construction has not started yet: proposed, designed, seeking or receiving approval, permits, financing, or contracts, or a groundbreaking ceremony that is only scheduled for the future.
+- groundbreaking: the main news is that the groundbreaking ceremony or the start of construction took place within the last few days.
+- halted: construction stopped or suspended. resumed: restarted after a halt. cancelled: the project was scrapped.
+- topped_out: the structure reached its final height.
+- completed: construction finished, or the facility opened or was inaugurated.
+- unknown: the article does not make the status clear.
 project_type: building=high-rise/residential/commercial/mixed-use buildings and developments, industrial=factories/plants/data centers/warehouses, infrastructure=stations/airports/ports/roads/bridges/railways, energy=power plants/grids/pipelines, public_facility=stadiums/hospitals/schools/pools and other public buildings, other=anything else.
-building_name: the proper name of the building or project only, copied as written in the article (do not translate it or add descriptive words). Use null for generic words such as "skyscraper", "tower", or "高層ビル".
-location: best-effort extraction to help locate the site on satellite imagery; null when not stated.
+building_name: the proper name of the building or project, copied exactly as written in the article (do not translate it, shorten it, or add descriptive words). If the article gives any proper or working name for the project (e.g. "Hudson Yards", "Line 5 Extension", "Riverside Medical Pavilion"), you must fill it. Use null only when the article gives no name, and never for generic words such as "skyscraper", "tower", or "高層ビル".
+location: best-effort extraction to help locate the site on satellite imagery; fill city whenever the article mentions the city or town of the site; null when not stated.
 
 milestones: every milestone of the main project mentioned in the article, both past (status=actual) and scheduled (status=planned), e.g. a groundbreaking ceremony scheduled for next month and a target completion year.
 - date must keep the full precision of date_text: "August 4, 2026" -> "2026-08-04", "March 2027" -> "2027-03", "completion in 2029" -> "2029". Never reduce precision, and never pad a missing month or day with 01.
 - When the article gives a month and day without a year, infer the year from the publication date. An "actual" milestone cannot be later than the publication date.
 - Return [] when no milestone is mentioned or when excluded=true.
 
-IMPORTANT: Write "reason" in Japanese, even when the article is in English. Keep every other text field (project_evidence, building_name, location, date_text) exactly in the article's original language; never translate them.
+IMPORTANT: Write "reason" in Japanese, even when the article is in English. Copy every other text field (project_evidence, building_name, location, date_text) character by character in the same language and script as the article. Never translate or transliterate them: for an English article, "Hudson Yards" and "New York" must stay in Latin letters, never katakana or kanji.
 """
 
 
@@ -439,6 +504,9 @@ def _sanitize_dates(result: dict, publish_date, is_construction: bool) -> tuple[
     return event_date, None, basis, milestones
 
 
+_JA_CHARS = re.compile(r"[ぁ-んァ-ヶ一-龥]")  # ひらがな・カタカナ・漢字
+
+
 def _null_if_blank(value):
     """LLMが空の代わりに返す "null" / "None" / "N/A" / 空文字を None に揃える。"""
     if isinstance(value, str) and value.strip().lower() in ("", "null", "none", "n/a", "unknown"):
@@ -449,6 +517,82 @@ def _null_if_blank(value):
 def _normalize_for_match(text: str) -> str:
     """引用照合用に小文字化し、記号・空白を除去する（CJK文字は残る）。"""
     return re.sub(r"\W+", "", str(text).lower())
+
+
+def _apply_subject_rule(result: dict) -> dict:
+    """建設記事: 主題（main_subject）が案件の進捗でないのに採用されていたら除外に直す。
+
+    プロンプトでは「project_progress 以外は除外」と指示しているが、LLMが主題の分類と
+    除外判定を食い違えることがあるため、分類の方を正としてそろえる。直した場合は
+    excluded_by_subject=True を付ける（元の判定は精度評価のために残す）。
+    """
+    subject = result.get("main_subject")
+    if subject in MAIN_SUBJECTS and subject != "project_progress" and not _as_bool(result.get("excluded")):
+        result = {**result, "excluded": True, "rating": None, "excluded_by_subject": True}
+    return result
+
+
+def _apply_demand_rules(result: dict) -> dict:
+    """需要記事の出力を整える（方向の合成と、記事に因果がない記事の除外）。
+
+    tone: 需要と供給の向きを足し合わせて決める（需要増・供給の引き締まり=+1、需要減・供給の緩み=-1）。
+    どちらも動かないか打ち消し合うときだけ、記事が書く価格の向きを使う（それもなければ neutral）。
+    記事が述べたきっかけ（causal.trigger）が空なのに採用されている記事は除外し、excluded_by_rule を立てる。
+    """
+    causal = result.get("causal") if isinstance(result.get("causal"), dict) else {}
+    result["causal"] = {k: _null_if_blank(v) for k, v in causal.items()}
+    inferred = result.get("causal_inferred") if isinstance(result.get("causal_inferred"), dict) else {}
+    result["causal_inferred"] = {k: _null_if_blank(v) for k, v in inferred.items()} or None
+
+    price = result.get("price_direction")
+    score = {"increase": 1, "decrease": -1}.get(result.get("demand_direction"), 0) + \
+        {"tighter": 1, "looser": -1}.get(result.get("supply_direction"), 0)
+    if score:
+        result["tone"] = "bullish" if score > 0 else "bearish"
+    else:
+        result["tone"] = {"up": "bullish", "down": "bearish"}.get(price, "neutral")
+
+    if not _as_bool(result.get("excluded")) and not result["causal"].get("trigger"):
+        result["excluded"] = True
+        result["rating"] = None
+        result["excluded_by_rule"] = "no_stated_trigger"
+    return result
+
+
+def _verify_demand_evidence(result: dict, article_text: str) -> tuple[int | None, dict]:
+    """需要用の根拠の引用が記事（タイトル＋本文）に実在するかを照合する。
+
+    ★3（予想・コンセンサスとの乖離）は、記事中の比較の記述を根拠とする基準のため、
+    surprise_evidence が記事に実在しない★3は★2に下げ、元の値を rating_raw に残す。
+    戻り値: (保存するrating, llm_analysis["evidence"] に入れる内容)
+    """
+    normalized_text = _normalize_for_match(article_text)
+
+    def check(value):
+        value = _null_if_blank(value)
+        normalized = _normalize_for_match(value) if value else ""
+        return value, bool(normalized) and normalized in normalized_text
+
+    causal_evidence, causal_found = check(result.get("causal_evidence"))
+    surprise_evidence, surprise_found = check(result.get("surprise_evidence"))
+    evidence = {
+        "causal_evidence":  causal_evidence,
+        "causal_found":     causal_found,
+        "surprise_evidence": surprise_evidence,
+        "surprise_found":   surprise_found,
+    }
+
+    rating = result.get("rating")
+    try:
+        rating = int(rating) if rating is not None else None
+    except (TypeError, ValueError):
+        rating = None
+    if _as_bool(result.get("excluded")):
+        rating = None
+    elif rating == 3 and not surprise_found:
+        evidence["rating_raw"] = 3
+        rating = 2
+    return rating, evidence
 
 
 def _build_construction_info(result: dict, milestones: list[dict], article_text: str = "") -> dict:
@@ -467,8 +611,23 @@ def _build_construction_info(result: dict, milestones: list[dict], article_text:
     evidence = _null_if_blank(result.get("project_evidence"))
     normalized_evidence = _normalize_for_match(evidence) if evidence else ""
     evidence_found = bool(normalized_evidence) and normalized_evidence in _normalize_for_match(article_text)
+
+    # 理由の欄（日本語）につられて、日本語でない記事の案件名・都市が日本語に訳されることがある。
+    # 記事に日本語が無いのに日本語が入っていれば訳出とみなし、案件名は記事から書き写した根拠の引用に、
+    # 都市は空に置き換える（衛星画像との照合では、誤った表記より空の方が安全なため）
+    name_fixed = None
+    if not _JA_CHARS.search(article_text or ""):
+        if building_name and _JA_CHARS.search(building_name):
+            building_name = evidence if evidence_found else None
+            name_fixed = "translated"
+        if location and location.get("city") and _JA_CHARS.search(location["city"]):
+            location = {**location, "city": None}
+            name_fixed = name_fixed or "translated_city"
     return {
         "status":           result.get("construction_status"),
+        "main_subject":     result.get("main_subject") if result.get("main_subject") in MAIN_SUBJECTS else None,
+        "excluded_by_subject": bool(result.get("excluded_by_subject")),
+        "name_fixed":       name_fixed,
         "project_type":     project_type if project_type in PROJECT_TYPES else "other",
         "building_name":    building_name,
         "location":         location,
@@ -489,6 +648,8 @@ def run_all(backend, target_keys: set[str] | None = None, article_ids: list[int]
         query = session.query(Article).filter(Article.is_llm_processed == False)
         if target_keys:
             query = query.filter(Article.target.in_(target_keys))
+        if LLM_MODE_FILTER and article_ids is None:
+            query = query.filter(Article.collection_mode.in_(LLM_MODE_FILTER))
         if article_ids is not None:
             query = query.filter(Article.id.in_(article_ids))
         batch_limit = len(article_ids) if article_ids is not None else getattr(backend, "BATCH_LIMIT", LLM_BATCH_LIMIT)
@@ -530,6 +691,11 @@ def run_all(backend, target_keys: set[str] | None = None, article_ids: list[int]
             failed += 1
             continue
 
+        if is_construction:
+            result = _apply_subject_rule(result)
+        else:
+            result = _apply_demand_rules(result)
+
         # event_date を検証して独立カラムに昇格（時系列SQL検索用）
         event_date, event_date_raw, event_date_basis, milestones = _sanitize_dates(
             result, row.publish_date, is_construction
@@ -537,9 +703,15 @@ def run_all(backend, target_keys: set[str] | None = None, article_ids: list[int]
         row.event_date = event_date
         event_date_str = event_date.isoformat() if event_date else None
 
+        article_text = f"{title}\n{row.body or ''}"
+        rating = result.get("rating")
+        demand_evidence = None
+        if not is_construction:
+            rating, demand_evidence = _verify_demand_evidence(result, article_text)
+
         # 建設ターゲットは専用プロンプトのため why_notable/causal/drivers は返らない（キーは互換性のため残す）
         row.llm_analysis = {
-            "rating":       result.get("rating"),
+            "rating":       rating,
             "excluded":     _as_bool(result.get("excluded", False)),
             "tone":         result.get("tone"),
             "tone_score":   result.get("tone_score"),
@@ -547,12 +719,20 @@ def run_all(backend, target_keys: set[str] | None = None, article_ids: list[int]
             "why_notable":  result.get("why_notable"),
             "causal":       result.get("causal"),
             "drivers":      result.get("drivers", []),
+            "llm_model":    getattr(backend, "model_name", None),
+            "prompt_version": PROMPT_VERSIONS["construction" if is_construction else "demand"],
         }
         if event_date_raw is not None:
             row.llm_analysis["event_date_raw"] = event_date_raw
+        if demand_evidence is not None:
+            row.llm_analysis["evidence"] = demand_evidence
+            row.llm_analysis["causal_inferred"] = result.get("causal_inferred")
+            row.llm_analysis["direction"] = {k: result.get(f"{k}_direction") for k in ("price", "demand", "supply")}
+            if result.get("excluded_by_rule"):
+                row.llm_analysis["excluded_by_rule"] = result["excluded_by_rule"]
         if is_construction:
             row.llm_analysis["event_date_basis"] = event_date_basis
-            row.llm_analysis["construction"] = _build_construction_info(result, milestones, f"{title}\n{row.body or ''}")
+            row.llm_analysis["construction"] = _build_construction_info(result, milestones, article_text)
         row.is_llm_processed = True
 
         session = SessionLocal()
@@ -566,9 +746,14 @@ def run_all(backend, target_keys: set[str] | None = None, article_ids: list[int]
             )
             if event_date_raw is not None:
                 extra_log += f" event_date_raw={event_date_raw}"
+            if demand_evidence is not None:
+                extra_log += (f" causal_found={demand_evidence['causal_found']}"
+                              f" surprise_found={demand_evidence['surprise_found']}")
+                if "rating_raw" in demand_evidence:
+                    extra_log += " rating_raw=3"
             logger.info(
                 f"[{row.target}/{row.collection_mode}] id={row.id} "
-                f"rating={result.get('rating')} tone={result.get('tone')} "
+                f"rating={rating} tone={result.get('tone')} "
                 f"event_date={event_date_str}{extra_log}"
             )
         except Exception as e:

@@ -122,7 +122,16 @@ def main() -> None:
     ordered = [rows[i] for i in ids if i in rows and rows[i]["excluded"]] + \
               [rows[i] for i in ids if i in rows and not rows[i]["excluded"]]
     translations = {} if args.no_translate else translate_titles({r["id"]: r["title"] or "" for r in ordered})
+    out = args.out or os.path.splitext(args.csv)[0] + ".xlsx"
+    write_sheet(ordered, translations, out)
 
+
+def write_sheet(ordered: list[dict], translations: dict[int, str], out: str) -> None:
+    """ラベル付け用のExcelを書き出す。
+
+    ordered の各要素に必要なキー: id, excluded, publish_date, source_domain, title, url, body_head,
+    reason, status（英語のコード）, building_name, city, event_date, evidence
+    """
     wb = Workbook()
     ws = wb.active
     ws.title = "ラベル付け"
@@ -188,7 +197,6 @@ def main() -> None:
         guide.cell(row=i, column=1).alignment = Alignment(vertical="top")
     wb.active = 1  # 開いたときはラベル付けのシートを表示
 
-    out = args.out or os.path.splitext(args.csv)[0] + ".xlsx"
     wb.save(out)
     print(f"{len(ordered)} 件を出力しました: {out}（除外 {sum(1 for r in ordered if r['excluded'])} 件を先頭に配置）")
 
