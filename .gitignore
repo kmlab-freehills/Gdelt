@@ -6,3 +6,25 @@ __pycache__/
 *.pyc
 # 評価用の出力（記事本文・ラベルを含むためgit管理しない）
 eval_results/
+
+# 研究開発用（評価・分析のスクリプトとデータ）。このマシンでのみ管理し、リポジトリには含めない
+score_labels.py
+score_commodity_labels.py
+score_commodity_test.py
+eval_construction_prompt.py
+eval_demand_prompt.py
+make_test_set.py
+make_commodity_test_set.py
+make_label_sheet.py
+make_commodity_label_sheet.py
+make_commodity_check_sheet.py
+export_labels.py
+judge_demand.py
+compare_llm.py
+commodity_sample.py
+analyze_clusters.py
+analyze_sources.py
+classify_sources.py
+causal_summary.py
+price_leadlag.py
+sources.yaml
