@@ -95,6 +95,8 @@ services:
     environment:
       TARGET_FILTER: "large_scale_construction,large_scale_construction_ja"
       FETCH_INTERVAL_MINUTES: "15"
+      # 初回起動時（カーソル未設定）だけ42日分さかのぼる（ngramsは約40日で消える）。カーソルがあれば効かない
+      NGRAMS_BACKFILL_MINUTES: "60480"
     command: python fetcher.py
     depends_on:
       db:
