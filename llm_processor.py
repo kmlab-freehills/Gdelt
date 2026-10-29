@@ -65,7 +65,8 @@ MAIN_SUBJECTS = {
     "incident_at_building", "history_or_feature", "market_or_opinion", "other",
 }
 # llm_analysis に記録するプロンプトのバージョン（結果の世代を判別するため）
-PROMPT_VERSIONS = {"construction": "construction-v5", "demand": "demand-v4"}
+# demand_gated: 判定段（GATE_TARGETS）を通した需要の記事。方向・因果は demand-v4 のプロンプトで取る
+PROMPT_VERSIONS = {"construction": "construction-v5", "demand": "demand-v4", "demand_gated": "demand-v5"}
 # 需要プロンプトで品目の範囲を明示するもの（キーはターゲット名）。他の品目と混同されやすいものだけ書く
 DEMAND_SCOPES = {
     "rare earth": (
@@ -78,6 +79,47 @@ DEMAND_SCOPES = {
     ),
 }
 _DEMAND_SCOPE_BY_LABEL = {TARGETS[k]["label"]: v for k, v in DEMAND_SCOPES.items() if k in TARGETS}
+
+# 需要の記事の判定段（demand-v5）: 先に「その品目の需給の具体的な変化を報じているか」を思考モードで判定し、
+# 採用した記事だけ demand-v4 のプロンプトで方向・因果を取る。採否は判定段で決める（v4 の excluded は使わない）。
+# 正解のある記事で評価した5品目だけに使う（他のターゲットは従来の demand-v4 のまま）
+GATE_TARGETS = {"copper", "gold", "uranium", "rare earth", "natural gas"}
+GATE_POWER_TARGETS = {"natural gas", "uranium"}  # 電力需要を間接の需要として採る品目
+GATE_MAX_TRIES = 3
+GATE_CATEGORIES = {
+    "demand_change": "the article reports a concrete change in demand for the commodity that has happened or has been decided/announced: purchases, imports, consumption, orders, central-bank buying, ETF inflows/outflows, or a new project or mandate that will consume it, by a named country, company, or agency",
+    "supply_change": "the article reports a concrete change in supply of the commodity that has happened or has been decided/announced: production or output, a mine/plant/field/terminal starting, expanding, halting or being damaged, accidents, strikes, export controls/bans/quotas, sanctions, attacks or blockades that have cut output or shipments",
+    "supply_risk": "an attack, blockade, closure, threat or accident hits a facility or shipping route that produces or carries the commodity, named in the article, but a fall in output or shipments is not confirmed",
+    "balance_data": "the article reports figures on the supply-demand balance from an official or industry source: inventories or storage versus normal, a stated shortage/deficit/surplus",
+    "price_only": "price moves, market wraps, technical analysis, or price forecasts, where no concrete supply or demand change of the commodity is reported (moves explained only by rates, the dollar, inflation data, or sentiment)",
+    "commentary": "opinion, explainers, long-term or structural issues, policy debate, testimony, campaign pledges, or think-tank analysis without a new concrete supply or demand change",
+    "macro": "general economy, inflation, currency, trade or geopolitics news where the commodity's own supply or demand is not reported",
+    "company_micro": "company finance or corporate news (valuation, NPV, funding, listing, stock moves, analyst ratings, partnerships or MoUs) without a concrete change in production, capacity, or sales volumes of the commodity",
+    "other_commodity": "the concrete facts are about a different commodity (e.g. gasoline, diesel, crude oil or coal are not natural gas; lithium, cobalt, nickel, graphite, antimony or tungsten are not rare earths)",
+    "passing_mention": "the commodity is only listed or mentioned as background",
+    "promo": "advertisement, investment advice, or product promotion",
+    "other": "anything else unrelated",
+}
+GATE_RELEVANT = {"demand_change", "supply_change", "supply_risk", "balance_data"}
+GATE_RULES = """Extra rules:
+- The fact must be about {label} itself. For natural gas / LNG: facts about crude oil, oil tankers, diesel, gasoline, coal, electricity prices, or war and shipping in general are "other_commodity" or "macro" unless fact_quote names natural gas, gas, or LNG and a change in its supply or demand.
+- A forecast, warning, or analyst view without a concrete change that has happened or been decided is "commentary".
+- Price moves are "price_only" even when large, unless fact_quote reports a concrete supply or demand change.
+- Exploration results, drilling results, resource estimates, scoping or feasibility studies, permitting progress, shareholder letters, quarterly financial results without production volumes, and stock or fund recommendations are "company_micro" or "promo", not supply changes.
+- An article whose main topic is something else (an analyst note, an investment article, a market overview) is still relevant if it states a concrete, recent supply or demand fact for {label} with a named actor and a figure or a decided action (e.g. "China's central bank bought 650,000 ounces in August", "the mine halted output after an accident"). Use that fact for fact_quote.
+- When the body is missing, decide from the title only: relevant only if the title itself states the concrete change.
+- Indirect demand counts: power plants, reactors, gas turbines, boilers or data-center power projects that have been ordered, approved, filed with regulators, or contracted will burn or use the fuel ({label} for natural gas or uranium), so they are "demand_change" when the article names the project and its size.
+- Imports or cargoes that fall or are disrupted are a "supply_change" or "demand_change" for {label}, not "macro".
+- An attack, drone strike, blockade or closure that hits {label} facilities (gas fields, processing plants, LNG terminals, pipelines, mines) or routes that carry {label} (e.g. the Strait of Hormuz for LNG) is "supply_risk" when output loss is not confirmed, and "supply_change" when it is. War news that does not name {label} facilities, cargoes or routes is "macro".
+- For a single company, only flow figures count: production, shipments, sales or offtake volumes, an operating mine or plant starting, halting, cutting or raising output, or a final investment decision or permit with a stated annual capacity. Resource or reserve estimates, drill grades, scoping, PEA, pre-feasibility or feasibility studies, NPV, IRR, capex, and long-term targets ("X tonnes by 2030") are "company_micro", even with many figures.
+- Interviews, speeches, hearings or testimony about targets, potential, or what should be done are "commentary", even when they quote national capacity targets.
+- Interest rates, bond yields, monetary policy and inflation are "macro" unless a concrete purchase, sale or flow of {label} is reported."""
+GATE_POWER_RULE = """
+- Electricity demand counts as indirect demand for {label} when the article names gas-fired power (for natural gas) or nuclear power (for uranium) as a source of that power: record or rising power demand, data-center load, or power purchase agreements with gas or nuclear plants are "demand_change"."""
+# 判定段の前に除外する宣伝・投資記事（見出しと本文の冒頭で判定）
+_PROMO_TITLE = re.compile(r"stocks? to buy|should you buy|is it too late|\bshares (up|down|sold|bought|climb|jump)|nyse:|nasdaq:|\$[A-Z]{2,5}\b|stock has|price target|best .* companies|dividend|etf\?|if i could only own|analyst upgrades|consensus", re.I)
+_PROMO_TITLE2 = re.compile(r"\$[\d,]+ investment|invest(ing|ment)? guide|rebalanc|what investors should|multibagger|smart talk", re.I)
+_SPONSORED_BODY = re.compile(r"^\s*\[?sponsored", re.I)
 _DATE_PRECISION = {4: "year", 7: "month", 10: "day"}  # YYYY / YYYY-MM / YYYY-MM-DD
 
 
@@ -114,7 +156,7 @@ class _GeminiBackend:
         )
         logger.info(f"Gemini ({GEMINI_MODEL}) 初期化完了")
 
-    def call(self, prompt: str) -> str:
+    def call(self, prompt: str, think: bool = False) -> str:  # think は Ollama 用（Gemini では使わない）
         MAX_RETRIES = 3
         delay = self.REQUEST_INTERVAL
         for attempt in range(MAX_RETRIES):
@@ -159,7 +201,11 @@ class _OllamaBackend:
             logger.warning(f"モデル {OLLAMA_MODEL} が未取得の可能性があります（取得済み: {models}）")
         logger.info(f"Ollama ({OLLAMA_MODEL} @ {OLLAMA_HOST}) 初期化完了")
 
-    def call(self, prompt: str) -> str:
+    def call(self, prompt: str, think: bool = False) -> str:
+        """think=True は需要の判定段だけで使う（思考の分だけ時間がかかるため、待ち時間を600秒以上にする）。"""
+        options = {"temperature": 0.01, "num_ctx": OLLAMA_NUM_CTX}
+        if think:
+            options["use_mmap"] = True  # メモリ不足のPCでモデルを読み込めない対策（結果は変わらない）
         resp = requests.post(
             f"{OLLAMA_HOST}/api/chat",
             json={
@@ -167,10 +213,10 @@ class _OllamaBackend:
                 "messages": [{"role": "user", "content": prompt}],
                 "format": "json",
                 "stream": False,
-                "think": False,  # Qwen3等の思考モードを無効化（速度優先）
-                "options": {"temperature": 0.01, "num_ctx": OLLAMA_NUM_CTX},
+                "think": think,  # 通常は Qwen3等の思考モードを無効化（速度優先）
+                "options": options,
             },
-            timeout=OLLAMA_TIMEOUT_SECONDS,
+            timeout=max(OLLAMA_TIMEOUT_SECONDS, 600) if think else OLLAMA_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
         return resp.json()["message"]["content"]
@@ -275,6 +321,59 @@ event_date: the date the described event actually occurred (not the article publ
 
 IMPORTANT: Write reason, why_notable, causal (trigger, mechanism, effect), causal_inferred, and drivers in Japanese, even when the article is in English. Keep causal_evidence and surprise_evidence exactly in the article's original language.
 """
+
+
+def _build_gate_prompt(target_key: str, target_label: str, title: str, domain: str, publish_date: str, body: str) -> str:
+    """需要の判定段（demand-v5）のプロンプト。研究で評価した gate5t と同じ文面。"""
+    scope = _DEMAND_SCOPE_BY_LABEL.get(target_label)
+    scope_text = f"{scope}\n" if scope else ""
+    body_text = (body or "").strip() or "(本文取得不可 - タイトルのみで判断)"
+    cat_text = "\n".join(f'- "{k}": {v}' for k, v in GATE_CATEGORIES.items())
+    rules = GATE_RULES + (GATE_POWER_RULE if target_key in GATE_POWER_TARGETS else "")
+    return f"""You decide whether a news article reports a concrete supply-demand change for {target_label}.
+{scope_text}
+Article:
+- Title: {title}
+- Source: {domain}
+- Published: {publish_date}
+- Body: {body_text}
+
+Categories:
+{cat_text}
+
+Return ONLY valid JSON:
+{{
+  "reason": "<1-2 sentences in Japanese: what the article reports about {target_label}>",
+  "fact_quote": "<the shortest sentence copied verbatim from the article that states the concrete supply or demand change of {target_label}, or null>",
+  "category": "<one of: {', '.join(GATE_CATEGORIES)}>"
+}}
+Write reason first, then fact_quote, then category. Choose demand_change, supply_change, supply_risk or balance_data ONLY when fact_quote states that change for {target_label} itself. Copy fact_quote in the article's original language; never paraphrase or translate.
+""" + rules.format(label=target_label)
+
+
+def _is_promo(title: str, body: str) -> bool:
+    return bool(_PROMO_TITLE.search(title or "") or _PROMO_TITLE2.search(title or "") or _SPONSORED_BODY.search(body or ""))
+
+
+def _run_gate(backend, prompt: str, article_text: str) -> dict | None:
+    """判定段を実行する。区分が決まらなければ GATE_MAX_TRIES 回までやり直し、だめなら None。"""
+    for attempt in range(GATE_MAX_TRIES):
+        try:
+            result = _parse_json(backend.call(prompt, think=True))
+        except Exception as e:
+            logger.warning(f"判定段の呼び出し失敗（{attempt + 1}/{GATE_MAX_TRIES}）: {e}")
+            time.sleep(5)
+            continue
+        if result and result.get("category") in GATE_CATEGORIES:
+            quote = _null_if_blank(result.get("fact_quote"))
+            return {
+                "category":    result["category"],
+                "adopted":     result["category"] in GATE_RELEVANT,
+                "reason":      result.get("reason"),
+                "fact_quote":  quote,
+                "quote_found": bool(quote) and _normalize_for_match(quote) in _normalize_for_match(article_text),
+            }
+    return None
 
 
 def _build_construction_prompt(target_label: str, title: str, domain: str, publish_date: str, body_text: str) -> str:
@@ -676,20 +775,37 @@ def run_all(backend, target_keys: set[str] | None = None, article_ids: list[int]
         publish_date = row.publish_date.strftime("%Y-%m-%d") if row.publish_date else ""
 
         is_construction = row.target in CONSTRUCTION_TARGETS
-        prompt = _build_prompt(target_label, title, domain, publish_date, row.body or "", is_construction)
+        article_text = f"{title}\n{row.body or ''}"
 
-        try:
-            raw_response = backend.call(prompt)
-        except Exception as e:
-            logger.error(f"[article_id={row.id}] LLM呼び出し失敗: {e}")
-            failed += 1
-            continue
+        # 需要の判定段（GATE_TARGETS のみ）。宣伝の記事は判定段を呼ばずに除外する
+        gate = None
+        if not is_construction and row.target in GATE_TARGETS:
+            if _is_promo(title, row.body):
+                gate = {"category": None, "adopted": False, "promo": True}
+            else:
+                gate = _run_gate(backend, _build_gate_prompt(row.target, target_label, title, domain, publish_date, row.body), article_text)
+                if gate is None:
+                    logger.error(f"[article_id={row.id}] 判定段の区分が決まらない")
+                    failed += 1
+                    continue
 
-        result = _parse_json(raw_response)
-        if not result:
-            logger.error(f"[article_id={row.id}] JSONパース失敗")
-            failed += 1
-            continue
+        if gate is not None and not gate["adopted"]:
+            # 採用しない記事は方向・因果のプロンプトを呼ばない
+            result = {"excluded": True, "rating": None, "reason": gate.get("reason")}
+        else:
+            prompt = _build_prompt(target_label, title, domain, publish_date, row.body or "", is_construction)
+            try:
+                raw_response = backend.call(prompt)
+            except Exception as e:
+                logger.error(f"[article_id={row.id}] LLM呼び出し失敗: {e}")
+                failed += 1
+                continue
+
+            result = _parse_json(raw_response)
+            if not result:
+                logger.error(f"[article_id={row.id}] JSONパース失敗")
+                failed += 1
+                continue
 
         if is_construction:
             result = _apply_subject_rule(result)
@@ -703,7 +819,6 @@ def run_all(backend, target_keys: set[str] | None = None, article_ids: list[int]
         row.event_date = event_date
         event_date_str = event_date.isoformat() if event_date else None
 
-        article_text = f"{title}\n{row.body or ''}"
         rating = result.get("rating")
         demand_evidence = None
         if not is_construction:
@@ -730,6 +845,17 @@ def run_all(backend, target_keys: set[str] | None = None, article_ids: list[int]
             row.llm_analysis["direction"] = {k: result.get(f"{k}_direction") for k in ("price", "demand", "supply")}
             if result.get("excluded_by_rule"):
                 row.llm_analysis["excluded_by_rule"] = result["excluded_by_rule"]
+        if gate is not None:
+            # 採否は判定段で決める。v4 の判定（因果の規則による除外を含む）は v4_excluded に残す
+            row.llm_analysis["prompt_version"] = PROMPT_VERSIONS["demand_gated"]
+            row.llm_analysis["gate"] = gate
+            row.llm_analysis["v4_excluded"] = row.llm_analysis["excluded"] if gate["adopted"] else None
+            row.llm_analysis["excluded"] = not gate["adopted"]
+            row.llm_analysis.pop("excluded_by_rule", None)
+            if gate.get("promo"):
+                row.llm_analysis["excluded_by_rule"] = "promo"
+            if not gate["adopted"]:
+                row.llm_analysis["tone"] = None
         if is_construction:
             row.llm_analysis["event_date_basis"] = event_date_basis
             row.llm_analysis["construction"] = _build_construction_info(result, milestones, article_text)

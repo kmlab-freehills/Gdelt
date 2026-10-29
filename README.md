@@ -74,11 +74,26 @@ NGRAMS_BACKFILL_MINUTES=60
 LLM_INTERVAL_HOURS=6
 ```
 
+### 2.5 ローカルLLM（Ollama）の準備（`LLM_BACKEND=ollama` のとき）
+
+LLMはホストPC上の Ollama で動かします（コンテナからは `host.docker.internal:11434` で接続）。GPUのVRAMが8GB以上あれば qwen3:8b がGPUで動きます。
+
+```bash
+# Ollama をインストールしたあと（https://ollama.com/download）
+ollama pull qwen3:8b
+ollama list   # qwen3:8b が表示されればよい
+```
+
+`.env` は `.env.example` の `LLM_BACKEND=ollama` / `OLLAMA_MODEL=qwen3:8b` のままでよく、`POSTGRES_PASSWORD` などDBの値だけ設定します。
+新しいPCではDBは空から始まり、起動時から `NGRAMS_BACKFILL_MINUTES` 分さかのぼって収集します（GDELTのngramsファイルは約40日で消えるため、それより前の記事は取れません）。
+
 ### 3. Docker Compose で起動
 
 ```bash
 docker compose up -d --build
 ```
+
+コモディティのLLM処理（`llm_processor`）は `restart: no` のため、使うときに `docker compose up -d llm_processor` で起動します。建設は `fetcher_construction` / `llm_processor_construction` を起動します（後述）。
 
 起動するコンテナ：
 
@@ -169,6 +184,36 @@ APIサーバー起動後、Swagger UIでエンドポイントを確認できま�
 | 2 | ★★☆ | 需要の二次的影響・周辺変化 |
 | 1 | ★☆☆ | 既知トレンドの再確認（参考情報） |
 | null | 除外 | 無関係・重複記事 |
+
+#### コモディティ5品目の判定段（demand-v5）
+
+銅・金・ウラン・レアアース・天然ガス（`GATE_TARGETS`）の記事は、先に判定段（思考モード）で「その品目の需給の具体的な変化を報じているか」を決め、採用した記事だけ上のプロンプト（demand-v4）で方向・因果を取ります。採否は判定段で決まり、`excluded` に入ります。宣伝・投資記事の見出しは判定段の前に除外します。
+
+```json
+{
+  "prompt_version": "demand-v5",
+  "excluded": false,
+  "v4_excluded": false,
+  "gate": {
+    "category": "supply_change",
+    "adopted": true,
+    "reason": "判定の理由",
+    "fact_quote": "需給の変化を述べた記事中の一文（原文のまま）",
+    "quote_found": true
+  }
+}
+```
+
+| gate.category | 採用 | 意味 |
+|---|---|---|
+| demand_change / supply_change | ○ | 需要・供給の具体的な変化（起きた・決まった） |
+| supply_risk | ○ | 供給施設・輸送路への攻撃・封鎖・事故（減産は未確認） |
+| balance_data | ○ | 公的機関・業界による在庫・不足の数字 |
+| price_only / commentary / macro / company_micro / other_commodity / passing_mention / promo / other | × | 値動きだけ・解説・マクロ・企業の話題・別の品目・触れるだけ・宣伝・その他 |
+
+- `v4_excluded`: 採用した記事について demand-v4 が除外と答えたか（参考。採否には使わない）。v4 が除外と答えた記事は `rating` が null になることがあります
+- `excluded_by_rule: "promo"`: 見出しの規則で除外した記事（判定段は呼ばないので `gate.category` は null）
+- 採用しない記事は demand-v4 を呼ばないため、`tone` は null、`causal` などは空になります
 
 ## ターゲット限定の常時収集パイプライン（fetcher_infra / llm_processor_infra）
 
@@ -282,4 +327,4 @@ construction系ターゲットの記事では、`llm_analysis` に以下の `con
 
 - **ngramsファイルの取りこぼし**: ネットワークエラー等で取得に失敗した場合はカーソルを進めずにcatch_upを終了し、次回実行時に再開します。0バイトファイルや404は正常系としてスキップしカーソルを進めます。
 - **ドメインブラックリスト**: プレスリリース配信系・アグリゲーター系の低品質ドメインは `ngrams_fetcher.py` の `DOMAIN_BLACKLIST` に随時追加してください（非英語ドメインは `lang` フィルタで対応できるため対象外）。
-- **ローカルLLMへの差し替え**: `llm_processor.py` の `_get_llm_backend()` に `call(prompt: str) -> str` インターフェースを実装するだけで切り替え可能です。
+- **ローカルLLMへの差し替え**: `llm_processor.py` の `_get_llm_backend()` に `call(prompt: str, think: bool = False) -> str` インターフェースを実装するだけで切り替え可能です（`think=True` は判定段の思考モード。対応しないバックエンドは無視してよい）。
