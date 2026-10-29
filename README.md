@@ -40,69 +40,139 @@
 └── requirements.txt
 ```
 
-## セットアップ手順
+## セットアップ手順（Windows の新しいPC）
 
-### 1. リポジトリの準備
+収集（fetcher）とLLM処理（llm_processor）は、コンテナの中で15分ごとに自動で動きます。外部のスケジューラ（cron など）は不要です。以下を一度行えば、PCがスリープしない限り放置で「取得 → LLM処理 → DBに蓄積」が続きます。
 
-```bash
-git clone <repository_url>
-cd <repository_directory>
-```
+### 0. 事前に確認すること
 
-### 2. 環境変数の設定
+- PCを24時間つけっぱなしにしてよいか
+- そのネットワークから記事サイトにアクセスしてよいか（本文を取得するため）
 
-`.env.example` を `.env` にコピーし、必要な値を設定します。
+### 1. Windows の準備
 
-```bash
-cp .env.example .env
-```
+- PowerShell（管理者）で `wsl --install` を実行して再起動する（Ubuntu が入る）
+- NVIDIA のドライバを最新にする
 
-`.env` の設定項目：
+### 2. Docker Desktop
 
-```env
-# LLM
-GEMINI_API_KEY=your_gemini_api_key_here
+- https://www.docker.com/products/docker-desktop/ からインストールする（WSL2 を使う設定）
+- Settings → General →「Start Docker Desktop when you sign in」をオン
+- Settings → Resources → WSL integration で Ubuntu をオン
 
-# PostgreSQL（Docker Compose使用時はこのまま）
-DATABASE_URL=postgresql://gdelt_user:gdelt_password@db:5432/gdelt_db
-POSTGRES_USER=gdelt_user
-POSTGRES_PASSWORD=gdelt_password
-POSTGRES_DB=gdelt_db
+### 3. Ollama（ローカルLLM）
 
-# 初回起動時（カーソル未設定）に何分前まで遡ってngramsを取得するか
-NGRAMS_BACKFILL_MINUTES=60
-LLM_INTERVAL_HOURS=6
-```
+LLMはホストPC上の Ollama で動かします（コンテナからは `host.docker.internal:11434` で接続）。GPUのVRAMが8GB以上あれば qwen3:8b が全部GPUに載ります。
 
-### 2.5 ローカルLLM（Ollama）の準備（`LLM_BACKEND=ollama` のとき）
-
-LLMはホストPC上の Ollama で動かします（コンテナからは `host.docker.internal:11434` で接続）。GPUのVRAMが8GB以上あれば qwen3:8b がGPUで動きます。
+- https://ollama.com/download から Windows 版をインストールする（サインイン時に自動で起動する）
 
 ```bash
-# Ollama をインストールしたあと（https://ollama.com/download）
 ollama pull qwen3:8b
 ollama list   # qwen3:8b が表示されればよい
 ```
 
-`.env` は `.env.example` の `LLM_BACKEND=ollama` / `OLLAMA_MODEL=qwen3:8b` のままでよく、`POSTGRES_PASSWORD` などDBの値だけ設定します。
-新しいPCではDBは空から始まり、起動時から `NGRAMS_BACKFILL_MINUTES` 分さかのぼって収集します（GDELTのngramsファイルは約40日で消えるため、それより前の記事は取れません）。
+### 4. GitHub への接続（Ubuntu の中で）
 
-### 3. Docker Compose で起動
+リポジトリは SSH で取得します。
 
 ```bash
-docker compose up -d --build
+ssh-keygen -t ed25519           # 質問はすべて Enter でよい
+cat ~/.ssh/id_ed25519.pub       # 表示された1行を GitHub の Settings → SSH and GPG keys に登録
+ssh -T git@github.com           # 「successfully authenticated」と出ればよい
 ```
 
-コモディティのLLM処理（`llm_processor`）は `restart: no` のため、使うときに `docker compose up -d llm_processor` で起動します。建設は `fetcher_construction` / `llm_processor_construction` を起動します（後述）。
+### 5. リポジトリの取得
 
-起動するコンテナ：
+GitHub の初期ブランチは別のブランチなので、`-b feature/ngrams` を必ず付けます。
 
-| コンテナ | 役割 | ポート |
-|---|---|---|
-| `gdelt_postgres` | PostgreSQL データベース | 5432 |
-| `gdelt_fetcher` | 定期収集ワーカー（5分ごとcatch_up） | - |
-| `gdelt_llm_processor` | LLM分析ワーカー | - |
-| `gdelt_api` | REST API サーバー | 8000 |
+```bash
+mkdir -p ~/GDELT && cd ~/GDELT
+git clone -b feature/ngrams git@github.com:kmlab-freehills/Gdelt.git
+cd Gdelt
+```
+
+### 6. 環境変数（.env）
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+- 書き換えるのは DB のパスワードだけ（`POSTGRES_PASSWORD` と、`DATABASE_URL` の中のパスワードを同じ値にする）
+- `OLLAMA_MODEL=qwen3:8b`・`OLLAMA_NUM_CTX=8192`・`SCRAPE_TEXT_LIMIT=4000` は変えない（精度を評価したときの条件と同じにするため）
+- 収集・LLM処理の間隔と件数は `docker-compose.yml` の値が使われるため、`.env` の `LLM_INTERVAL_HOURS`・`LLM_BATCH_LIMIT` は変えなくてよい
+
+### 7. 自動で復帰させる設定（放置して動かすPCだけ）
+
+`docker-compose.yml` は `restart: no`（PCを再起動しても自動では動かない）です。放置して動かすPCでは、同じフォルダに `docker-compose.override.yml` を作ります。Docker Compose が自動で読み込み、再起動や異常終了のあとも自動で復帰するようになります。このファイルは git に入れません。
+
+```yaml
+# docker-compose.override.yml
+services:
+  db:
+    restart: unless-stopped
+  fetcher:
+    restart: unless-stopped
+  llm_processor:
+    restart: unless-stopped
+  fetcher_construction:
+    restart: unless-stopped
+  llm_processor_construction:
+    restart: unless-stopped
+```
+
+### 8. 起動
+
+使うサービスだけを指定して起動します。
+
+```bash
+docker compose up -d --build db fetcher llm_processor fetcher_construction llm_processor_construction
+```
+
+| コンテナ | 役割 |
+|---|---|
+| `gdelt_postgres` | PostgreSQL データベース（ポート5432） |
+| `gdelt_fetcher` | コモディティの収集（15分ごと） |
+| `gdelt_llm_processor` | コモディティのLLM処理（15分ごと） |
+| `gdelt_fetcher_construction` | 建設の収集（15分ごと） |
+| `gdelt_llm_processor_construction` | 建設のLLM処理（15分ごと） |
+
+- 初回起動時は、コモディティ・建設とも約42日分さかのぼって収集します（GDELTのngramsファイルは約40日で消えるため、それより前は取れません）。最初の数時間〜1日ほどは、ダウンロードとLLM処理に時間がかかります
+- 収集は起動直後から、LLM処理は起動の約15分後から始まります
+- API（`gdelt_api`）とインフラ用（`fetcher_infra` / `llm_processor_infra`）は必要なときだけ起動します（後述）
+
+### 9. 動いているかの確認
+
+```bash
+docker ps                                  # 5つのコンテナが Up になっているか
+docker compose config | grep restart       # 7 を行ったPCでは unless-stopped になっているか
+docker logs -f gdelt_fetcher               # 収集のログが流れる
+docker logs -f gdelt_llm_processor         # 「Ollama (qwen3:8b …) 初期化完了」のあと、約15分後に処理のログが出る
+ollama ps                                  # 処理中に「100% GPU」と出ればGPUで動いている
+```
+
+翌日、`prompt_version` が `demand-v5` の記事が増えていれば正常です。
+
+```bash
+docker exec gdelt_postgres psql -U gdelt_user -d gdelt_db -c "
+SELECT target, llm_analysis->>'prompt_version' AS ver, count(*) FROM articles
+WHERE is_llm_processed GROUP BY 1, 2 ORDER BY 1;"
+```
+
+### 10. 放置するための Windows の設定
+
+- 設定 → システム → 電源：スリープを「なし」にする
+- Windows Update：アクティブ時間を設定し、勝手に再起動しにくくする
+- 再起動後はサインインするまで Docker が起動しない。自動サインインにするか、再起動したら一度サインインする（サインインすれば 7 の設定で自動で復帰する）
+
+### 止めるとき・注意
+
+```bash
+docker compose stop      # 止める（DBのデータとカーソルは残る。再開は 8 のコマンド）
+```
+
+- `docker compose down -v` は実行しない（DBのデータが全部消える）
+- llm_processor が「Ollama に接続できません」と出すときは、Windows の環境変数に `OLLAMA_HOST=0.0.0.0` を設定して Ollama を再起動する
 
 ## ログの確認
 
